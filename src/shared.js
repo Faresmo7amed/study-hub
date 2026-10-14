@@ -37,11 +37,55 @@ function subscribe(key, fn) {
 
 export const getStore = (key, initial) => read(key, initial)
 
-export function setStore(key, next, initial) {
+/*
+  Keys that belong to the user and are synced to the cloud.
+  Everything else (theme, backup reminder, fired reminders, the sync bookkeeping itself) stays on the device.
+*/
+export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap']
+
+const changeHooks = new Set()
+export const onStoreChange = fn => {
+    changeHooks.add(fn)
+    return () => changeHooks.delete(fn)
+}
+
+export function setStore(key, next, initial, silent = false) {
     const value = typeof next === 'function' ? next(read(key, initial)) : next
     cache.set(key, value)
     try { localStorage.setItem(PREFIX + key, JSON.stringify(value)) } catch {}
     emit(key)
+    if (!silent) changeHooks.forEach(fn => fn(key))
+}
+
+// Used by the sync layer: write a value that came from the cloud without marking it as a local change
+export const applyRemote = (key, value) => setStore(key, value, undefined, true)
+
+export function removeKey(key) {
+    try { localStorage.removeItem(PREFIX + key) } catch {}
+    cache.delete(key)
+    emit(key)
+}
+
+// Keys that have really been saved on this device (the built-in example data is not saved until you change it)
+export function storedKeys() {
+    try {
+        return SYNC_KEYS.filter(k => localStorage.getItem(PREFIX + k) !== null)
+    } catch {
+        return []
+    }
+}
+export const hasLocalData = () => storedKeys().length > 0
+
+export function clearLocalData() {
+    try {
+        const doomed = []
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i)
+            if (k && k.startsWith(PREFIX) && k !== PREFIX + 'theme') doomed.push(k)
+        }
+        doomed.forEach(k => localStorage.removeItem(k))
+    } catch {}
+    cache.clear()
 }
 
 if (typeof window !== 'undefined') {
@@ -64,7 +108,17 @@ export function exportAll() {
         }
     } catch {}
     cache.forEach((value, key) => { if (!(key in data)) data[key] = value })
+    delete data.sync // account bookkeeping, never part of a backup
     return { app: 'studyhub', version: 1, exportedAt: new Date().toISOString(), data }
+}
+
+export function downloadBackup() {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(exportAll(), null, 2)], { type: 'application/json' }))
+    a.download = `studyhub-backup-${todayISO()}.json`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+    setStore('meta', cur => ({ ...cur, lastBackup: Date.now() }), {})
 }
 
 export function checkBackup(obj) {
@@ -76,7 +130,7 @@ export function checkBackup(obj) {
 
 export function importAll(obj) {
     checkBackup(obj)
-    Object.entries(obj.data).forEach(([key, value]) => setStore(key, value))
+    Object.entries(obj.data).forEach(([key, value]) => { if (key !== 'sync') setStore(key, value) })
 }
 
 /*

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-    BADGES, GLOBAL_CSS, beep, checkBackup, dismissToast, exportAll, getStore, importAll, notify, setStore,
-    systemNotify, todayISO, useNow, useStats, useStore, useToasts,
+    BADGES, GLOBAL_CSS, beep, checkBackup, dismissToast, downloadBackup, getStore, importAll, notify, setStore,
+    systemNotify, useNow, useStats, useStore, useToasts,
 } from './shared'
 import Dashboard from './Dashboard'
 import Notes from './Notes'
 import Roadmap from './Roadmap'
+import { AccountButton, AccountModal, CloudSync } from './Account'
 
 const PAGES = [
     { id: 'dashboard', label: 'Dashboard', icon: '◧' },
@@ -19,7 +20,7 @@ const fromHash = () => {
 }
 
 /* ---------- Top bar ---------- */
-function TopBar({ page, go, onBackup }) {
+function TopBar({ page, go, onBackup, onAccount }) {
     const stats = useStats()
     const [meta] = useStore('meta', {})
     const stale = !meta.lastBackup || Date.now() - meta.lastBackup > 7 * 86400000
@@ -74,6 +75,7 @@ function TopBar({ page, go, onBackup }) {
                         Lv {stats.level.level}
                         <i><b style={{ width: stats.level.pct + '%' }} /></i>
                     </span>
+                    <AccountButton onClick={onAccount} />
                     <button className="btn sm" onClick={onBackup} aria-label="Backup and restore" title={stale ? 'You have not backed up in over a week' : 'Backup and restore'}>
                         <span aria-hidden="true">💾</span><span className="app-lbl"> Backup</span>{stale && <span className="app-dot" role="img" aria-label="Backup recommended" />}
                     </button>
@@ -203,18 +205,11 @@ function GameWatcher() {
 
 /* ---------- Backup and restore ---------- */
 function BackupModal({ onClose }) {
-    const [, setMeta] = useStore('meta', {})
     const [pending, setPending] = useState(null)
     const [error, setError] = useState('')
 
     const download = () => {
-        const backup = exportAll()
-        const a = document.createElement('a')
-        a.href = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }))
-        a.download = `studyhub-backup-${todayISO()}.json`
-        a.click()
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000)
-        setMeta(cur => ({ ...cur, lastBackup: Date.now() }))
+        downloadBackup()
         notify({ title: 'Backup downloaded', body: 'Keep the file somewhere safe, like a cloud drive.', icon: '💾' })
     }
 
@@ -280,6 +275,7 @@ function BackupModal({ onClose }) {
 export default function App() {
     const [page, setPage] = useState(fromHash)
     const [backup, setBackup] = useState(false)
+    const [account, setAccount] = useState(false)
 
     // Ask the browser not to evict our data when disk space runs low
     useEffect(() => {
@@ -302,13 +298,15 @@ export default function App() {
         <div className="app">
             <style>{GLOBAL_CSS}</style>
             <style>{CSS}</style>
-            <TopBar page={page} go={go} onBackup={() => setBackup(true)} />
+            <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} />
             <main>
                 {page === 'notes' && <Notes />}
                 {page === 'roadmap' && <Roadmap />}
                 {page === 'dashboard' && <Dashboard />}
             </main>
             {backup && <BackupModal onClose={() => setBackup(false)} />}
+            {account && <AccountModal onClose={() => setAccount(false)} />}
+            <CloudSync />
             <Toasts />
             <Reminders />
             <GameWatcher />
