@@ -22,8 +22,7 @@ const fromHash = () => {
 function TopBar({ page, go, onBackup }) {
     const stats = useStats()
     const [meta] = useStore('meta', {})
-    const [now] = useState(() => Date.now())
-    const stale = !meta.lastBackup || now - meta.lastBackup > 7 * 86400000
+    const stale = !meta.lastBackup || Date.now() - meta.lastBackup > 7 * 86400000
     const [theme, setTheme] = useStore('theme', 'system')
     const [perm, setPerm] = useState(() => ('Notification' in window ? Notification.permission : 'denied'))
 
@@ -43,9 +42,7 @@ function TopBar({ page, go, onBackup }) {
             const result = await Notification.requestPermission()
             setPerm(result)
             if (result === 'granted') notify({ title: 'Alerts enabled', body: 'Event reminders will also appear as system notifications.', icon: '✅' })
-        } catch {
-            return null
-        }
+        } catch {}
     }
 
     return (
@@ -53,62 +50,34 @@ function TopBar({ page, go, onBackup }) {
             <div className="app-top-in">
                 <a className="app-brand" href="#/dashboard" onClick={() => go('dashboard')}>
                     <span className="app-mark" aria-hidden="true">
-                        <svg viewBox="0 0 24 24" width="22" height="22">
-                            <path d="M5 19c0-6 4-5 7-8s1-6 7-6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-                            <circle cx="5" cy="19" r="2" fill="currentColor" />
-                            <circle cx="19" cy="5" r="2" fill="currentColor" />
-                        </svg>
+                        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M5 19c0-6 4-5 7-8s1-6 7-6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" /><circle cx="5" cy="19" r="2" fill="currentColor" /><circle cx="19" cy="5" r="2" fill="currentColor" /></svg>
                     </span>
                     Study Hub
                 </a>
-
                 <nav className="app-nav" aria-label="Pages">
                     {PAGES.map(p => (
-                        <button
-                            key={p.id}
-                            className={page === p.id ? 'on' : ''}
-                            onClick={() => go(p.id)}
-                            aria-current={page === p.id ? 'page' : undefined}
-                        >
+                        <button key={p.id} className={page === p.id ? 'on' : ''} onClick={() => go(p.id)} aria-current={page === p.id ? 'page' : undefined}>
                             <span aria-hidden="true">{p.icon}</span> {p.label}
                         </button>
                     ))}
                 </nav>
-
                 <div className="app-right">
                     {perm === 'default' && (
-                        <button
-                            className="btn sm"
-                            onClick={askPermission}
-                            title="Get system notifications for event reminders"
-                        >
-                            Enable alerts
+                        <button className="btn sm" onClick={askPermission} title="Get system notifications for event reminders" aria-label="Enable alerts">
+                            <span aria-hidden="true">🔔</span><span className="app-lbl"> Enable alerts</span>
                         </button>
                     )}
-
                     <span className="app-chip" title={`${stats.streak}-day streak. Best: ${stats.best}`}>
                         <span className={stats.streak > 0 ? 'flame-on' : ''}>🔥</span> {stats.streak}
                     </span>
-
                     <span className="app-chip lvl" title={`${stats.level.into}/${stats.level.span} XP to the next level`}>
                         Lv {stats.level.level}
-                        <i>
-                            <b style={{ width: stats.level.pct + '%' }} />
-                        </i>
+                        <i><b style={{ width: stats.level.pct + '%' }} /></i>
                     </span>
-
-                    <button
-                        className="btn sm"
-                        onClick={onBackup}
-                        title={stale ? 'You have not backed up in over a week' : 'Backup and restore'}
-                    >
-                        Backup
-                        {stale && <span className="app-dot" role="img" aria-label="Backup recommended" />}
+                    <button className="btn sm" onClick={onBackup} aria-label="Backup and restore" title={stale ? 'You have not backed up in over a week' : 'Backup and restore'}>
+                        <span aria-hidden="true">💾</span><span className="app-lbl"> Backup</span>{stale && <span className="app-dot" role="img" aria-label="Backup recommended" />}
                     </button>
-
-                    <button className="icon-btn" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">
-                        ◐
-                    </button>
+                    <button className="icon-btn" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">◐</button>
                 </div>
             </div>
         </header>
@@ -356,11 +325,18 @@ const CSS = `
 .app-nav button{border:0;background:none;padding:6px 14px;border-radius:7px;cursor:pointer;color:var(--mu);font-weight:500}
 .app-nav button:hover{color:var(--tx)}
 .app-nav button.on{background:var(--sf);color:var(--tx);box-shadow:0 1px 3px rgba(0,0,0,.12)}
-.app-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.app-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;min-width:0}
 .app-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--ln);background:var(--sf);border-radius:999px;padding:3px 12px;font-weight:600;font-size:14px}
 .app-chip.lvl i{display:block;width:44px;height:6px;border-radius:6px;background:var(--ln);overflow:hidden}
 .app-chip.lvl b{display:block;height:100%;background:var(--ok);transition:width .5s}
 .app-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wip);margin-left:6px}
 .flame-on{display:inline-block;animation:flicker 1.1s ease-in-out infinite}
-@media(max-width:640px){.app-top-in{gap:10px}.app-right{width:100%;justify-content:flex-end}}
+@media(max-width:640px){
+.app-top-in{gap:10px;padding:10px 12px}
+.app-nav{order:3;width:100%}.app-nav button{flex:1;padding:6px 6px;white-space:nowrap}
+.app-right{gap:6px}
+.app-lbl{display:none}
+.app-chip{padding:3px 9px}
+}
+@media(max-width:380px){.app-chip.lvl i{display:none}.app-brand{font-size:17px}.app-nav{padding:2px}.app-nav button{font-size:13px;padding:6px 2px}}
 `
