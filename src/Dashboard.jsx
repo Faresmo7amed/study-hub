@@ -392,6 +392,21 @@ function WeekBoard() {
 const EVENT_COLORS = ['#7c6cff', '#3ddc97', '#ffb454', '#ff6b8b', '#4cc9f0', '#a3a3b8']
 const REMIND = [[0, 'At the time'], [5, '5 minutes before'], [10, '10 minutes before'], [15, '15 minutes before'], [30, '30 minutes before'], [60, '1 hour before'], [120, '2 hours before'], [1440, '1 day before']]
 
+// Delete an event, forget its reminders, and offer Undo for a few seconds
+function removeEvent(ev) {
+    const original = getStore('events', []).find(x => x.id === ev.id)
+    if (!original) return
+    setStore('events', cur => cur.filter(x => x.id !== ev.id), [])
+    setStore('fired', cur => Object.fromEntries(Object.entries(cur).filter(([k]) => !k.startsWith(ev.id + '|'))), {})
+    play('uncheck')
+    notify({
+        title: 'Event deleted',
+        body: original.title || 'Untitled event',
+        icon: '🗑️',
+        actions: [{ label: 'Undo', onClick: () => setStore('events', cur => (cur.some(x => x.id === original.id) ? cur : [...cur, original]), []) }],
+    })
+}
+
 function EventModal({ initial, onClose }) {
     const [ev, setEv] = useState(initial)
     const set = (k, v) => setEv(cur => ({ ...cur, [k]: v }))
@@ -405,7 +420,7 @@ function EventModal({ initial, onClose }) {
         onClose()
     }
     const remove = () => {
-        setStore('events', cur => cur.filter(x => x.id !== ev.id), [])
+        removeEvent(initial)
         onClose()
     }
 
@@ -526,6 +541,7 @@ function CalendarCard() {
                             <div className="grow"><b>{e.title}</b>{e.notes && <p className="muted small">{e.notes}</p>}</div>
                             {e.time && Number(e.remind) > 0 && <span className="small muted" title="Reminder">⏳ {e.remind >= 60 ? e.remind / 60 + 'h' : e.remind + 'm'}</span>}
                             <button className="btn sm ghost" onClick={() => setModal(e)}>Edit</button>
+                            <button className="btn sm ghost danger" onClick={() => removeEvent(e)} aria-label={`Delete ${e.title}`}>Delete</button>
                         </li>
                     ))}
                 </ul>
@@ -557,6 +573,7 @@ function Upcoming() {
                             <p className="muted small">{parseISO(e.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}{e.time ? ' · ' + e.time : ' · all day'}</p>
                         </div>
                         <span className="small up-in">{e.time ? until(e.at - now.getTime()) : e.date === iso(now) ? 'today' : ''}</span>
+                        <button className="icon-btn" onClick={() => removeEvent(e)} title="Delete event" aria-label={`Delete ${e.title}`}>×</button>
                     </li>
                 ))}
             </ul>
