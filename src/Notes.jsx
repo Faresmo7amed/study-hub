@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { clamp, notify, uid, useStore } from './shared'
+import { play } from './sound'
 
 /* ============================================================
    Notes, in the spirit of Google Keep
@@ -163,7 +164,7 @@ function NoteEditor({ note, onChange, autoFocus }) {
 
     const row = it => (
         <div key={it.id} className={'kp-item' + (it.done ? ' done' : '')}>
-            <input type="checkbox" checked={it.done} onChange={e => setItem(it.id, { done: e.target.checked })} aria-label="Done" />
+            <input type="checkbox" checked={it.done} onChange={e => { setItem(it.id, { done: e.target.checked }); play(e.target.checked ? 'check' : 'uncheck') }} aria-label="Done" />
             <input data-item={it.id} className="kp-itext" value={it.t} placeholder="List item" aria-label="List item" onChange={e => setItem(it.id, { t: e.target.value })}
                 onKeyDown={e => {
                     if (e.key === 'Enter') { e.preventDefault(); addAfter(it.id) }
@@ -263,7 +264,7 @@ function NoteCard({ note, labels, onOpen, onChange, onNewLabel, actions }) {
                         {open.slice(0, 8).map(i => (
                             <div key={i.id} className="kp-item">
                                 <input type="checkbox" checked={false} disabled={!!note.trashed} aria-label={`Mark "${i.t}" as done`} onClick={e => e.stopPropagation()}
-                                    onChange={() => onChange({ ...note, items: note.items.map(x => (x.id === i.id ? { ...x, done: true } : x)), edited: Date.now() })} />
+                                    onChange={() => { play('check'); onChange({ ...note, items: note.items.map(x => (x.id === i.id ? { ...x, done: true } : x)), edited: Date.now() }) }} />
                                 <span>{i.t}</span>
                             </div>
                         ))}

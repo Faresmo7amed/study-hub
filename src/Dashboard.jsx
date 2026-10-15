@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Database from './Database'
+import { play } from './sound'
 import {
-    BADGES, DAYS, TYPES, TYPE_KEYS, addDays, beep, clamp, confetti, dayIndex, emptyWeek, getStore, hms, iso,
+    BADGES, DAYS, TYPES, TYPE_KEYS, addDays, clamp, computeStats, confetti, dayIndex, emptyWeek, getStore, hms, iso,
     notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
     useNow, useStats, useStore, weekStart,
 } from './shared'
@@ -157,6 +158,8 @@ function toggleTodo(key, day, id, el) {
     if (!todo) return
     const nowDone = !todo.done
     const today = todayISO()
+    const doneBefore = getStore('activity', {})[today] || 0
+    const focusToday = getStore('focus', {})[today] || 0
     setStore('todos', cur => ({
         ...cur,
         [key]: cur[key].map((list, i) => (i !== day ? list : list.map(t => (t.id !== id ? t : { ...t, done: nowDone, doneOn: nowDone ? today : null })))),
@@ -171,6 +174,30 @@ function toggleTodo(key, day, id, el) {
         const r = el.getBoundingClientRect()
         confetti(r.left + r.width / 2, r.top + r.height / 2)
     }
+
+    // One sound per action, the most special one wins: a new streak day, the daily goal, a finished day, a big item, then a plain check
+    if (!nowDone) {
+        play('uncheck')
+        return
+    }
+    const goal = getStore('settings', { dailyGoal: 3 }).dailyGoal || 3
+    const dayList = getStore('todos', {})[key][day]
+    const firstOfDay = doneBefore === 0 && focusToday === 0
+    const reachedGoal = doneBefore + 1 === goal
+    if (firstOfDay) {
+        const streak = computeStats(getStore('todos', {}), getStore('activity', {}), getStore('focus', {})).streak
+        notify({ title: streak > 1 ? `${streak}-day streak` : 'Streak started', body: streak > 1 ? 'Keep the chain going.' : 'Come back tomorrow to make it two.', icon: '🔥' })
+        play('streak')
+    } else if (reachedGoal) {
+        play('goal')
+    } else if (dayList.every(t => t.done)) {
+        play('complete')
+    } else if (['project', 'course', 'book'].includes(todo.type)) {
+        play('complete')
+    } else {
+        play('check')
+    }
+    if (reachedGoal) notify({ title: 'Daily goal reached', body: `${goal} todos done today.`, icon: '🎯' })
 }
 
 function TodoItem({ todo, day, onToggle, onEdit, onDelete }) {
@@ -284,7 +311,10 @@ function WeekBoard() {
         if (!draft[key]) draft[key] = emptyWeek()
         return draft[key]
     }
-    const add = (day, { text, type }) => update(d => { ensure(d)[day].push({ id: uid(), text, type, done: false, doneOn: null }) })
+    const add = (day, { text, type }) => {
+        update(d => { ensure(d)[day].push({ id: uid(), text, type, done: false, doneOn: null }) })
+        play('add')
+    }
     const edit = (day, id, patch) => update(d => {
         const t = ensure(d)[day].find(x => x.id === id)
         if (t) Object.assign(t, patch)
@@ -554,13 +584,13 @@ function Pomodoro() {
                 updateFocus(d => { d[todayISO()] = (d[todayISO()] || 0) + 1 })
                 notify({ title: 'Focus session complete', body: `${mins} minutes done. Take a 5 minute break.`, icon: '🍅' })
                 systemNotify('Focus session complete', 'Take a 5 minute break.')
-                beep('alarm')
+                play('focus')
                 setMode('break')
                 setLeft(5 * 60)
             } else {
                 notify({ title: 'Break is over', body: 'Ready for another session?', icon: '⏰' })
                 systemNotify('Break is over', 'Ready for another session?')
-                beep('soft')
+                play('breakover')
                 setMode('focus')
                 setLeft(mins * 60)
             }

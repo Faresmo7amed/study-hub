@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-    BADGES, GLOBAL_CSS, beep, checkBackup, dismissToast, downloadBackup, getStore, importAll, notify, setStore,
+    BADGES, GLOBAL_CSS, checkBackup, dismissToast, downloadBackup, getStore, importAll, notify, setStore,
     systemNotify, useNow, useStats, useStore, useToasts,
 } from './shared'
 import Dashboard from './Dashboard'
 import Notes from './Notes'
 import Roadmap from './Roadmap'
 import { AccountButton, AccountModal, CloudSync } from './Account'
+import { SoundButton, SoundModal } from './SoundSettings'
+import { play } from './sound'
 
 const PAGES = [
     { id: 'dashboard', label: 'Dashboard', icon: '◧' },
@@ -20,7 +22,7 @@ const fromHash = () => {
 }
 
 /* ---------- Top bar ---------- */
-function TopBar({ page, go, onBackup, onAccount }) {
+function TopBar({ page, go, onBackup, onAccount, onSound }) {
     const stats = useStats()
     const [meta] = useStore('meta', {})
     const stale = !meta.lastBackup || Date.now() - meta.lastBackup > 7 * 86400000
@@ -79,6 +81,7 @@ function TopBar({ page, go, onBackup, onAccount }) {
                     <button className="btn sm" onClick={onBackup} aria-label="Backup and restore" title={stale ? 'You have not backed up in over a week' : 'Backup and restore'}>
                         <span aria-hidden="true">💾</span><span className="app-lbl"> Backup</span>{stale && <span className="app-dot" role="img" aria-label="Backup recommended" />}
                     </button>
+                    <SoundButton onClick={onSound} />
                     <button className="icon-btn" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">◐</button>
                 </div>
             </div>
@@ -138,7 +141,7 @@ function Reminders() {
                     onClick: () => snoozed.current.push({ ev, at: Date.now() + 5 * 60000 }),
                 }],
             })
-            beep(kind === 'pre' ? 'soft' : 'alarm')
+            play(kind === 'pre' ? 'reminder' : 'alarm')
             systemNotify(title, body)
         }
 
@@ -164,7 +167,7 @@ function Reminders() {
         if (due.length) {
             snoozed.current = snoozed.current.filter(s => s.at > t)
             due.forEach(s => notify({ title: s.ev.title || 'Event', body: 'Snoozed reminder', icon: '⏰', sticky: true }))
-            beep('soft')
+            play('reminder')
         }
 
         if (Object.keys(patch).length) setStore('fired', cur => ({ ...cur, ...patch }), {})
@@ -186,7 +189,9 @@ function GameWatcher() {
         if (ready.current) {
             if (levelUp) {
                 notify({ title: `Level ${stats.level.level}: ${stats.level.title}`, body: 'You levelled up. Keep the chain going.', icon: '🚀' })
-                beep('soft')
+                play('levelup')
+            } else if (earned.length) {
+                play('badge')
             }
             earned.forEach(b => notify({ title: `Badge unlocked: ${b.name}`, body: b.desc, icon: b.icon }))
         }
@@ -276,6 +281,7 @@ export default function App() {
     const [page, setPage] = useState(fromHash)
     const [backup, setBackup] = useState(false)
     const [account, setAccount] = useState(false)
+    const [soundOpen, setSoundOpen] = useState(false)
 
     // Ask the browser not to evict our data when disk space runs low
     useEffect(() => {
@@ -298,7 +304,7 @@ export default function App() {
         <div className="app">
             <style>{GLOBAL_CSS}</style>
             <style>{CSS}</style>
-            <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} />
+            <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} onSound={() => setSoundOpen(true)} />
             <main>
                 {page === 'notes' && <Notes />}
                 {page === 'roadmap' && <Roadmap />}
@@ -306,6 +312,7 @@ export default function App() {
             </main>
             {backup && <BackupModal onClose={() => setBackup(false)} />}
             {account && <AccountModal onClose={() => setAccount(false)} />}
+            {soundOpen && <SoundModal onClose={() => setSoundOpen(false)} />}
             <CloudSync />
             <Toasts />
             <Reminders />

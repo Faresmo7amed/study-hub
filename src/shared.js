@@ -381,28 +381,6 @@ export const useToasts = () => useSyncExternalStore(subToasts, () => toasts)
 /* ============================================================
    Sound, system notifications, confetti
    ============================================================ */
-let audio
-export function beep(kind = 'soft') {
-    try {
-        audio = audio || new (window.AudioContext || window.webkitAudioContext)()
-        const t0 = audio.currentTime
-        const tones = kind === 'alarm' ? [880, 660, 880, 660] : [660, 880]
-        tones.forEach((freq, i) => {
-            const osc = audio.createOscillator()
-            const gain = audio.createGain()
-            const at = t0 + i * 0.2
-            osc.type = 'sine'
-            osc.frequency.value = freq
-            gain.gain.setValueAtTime(0.0001, at)
-            gain.gain.exponentialRampToValueAtTime(0.22, at + 0.02)
-            gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.18)
-            osc.connect(gain).connect(audio.destination)
-            osc.start(at)
-            osc.stop(at + 0.2)
-        })
-    } catch {}
-}
-
 export function systemNotify(title, body) {
     try {
         if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body })

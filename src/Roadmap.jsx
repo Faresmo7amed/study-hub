@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { addTodoToday, confetti, notify, uid, useStore } from './shared'
+import { play } from './sound'
 
 /* ============================================================
    Roadmap: a vertical, snake-shaped learning path
@@ -172,6 +173,7 @@ function Drawer({ data, sel, setSel, api }) {
     const sendToday = (label, type) => {
         if (!label.trim()) return
         addTodoToday({ text: label.trim(), type })
+        play('add')
         notify({ title: 'Added to today', body: label.trim(), icon: '📌' })
     }
     return (
@@ -208,7 +210,7 @@ function Drawer({ data, sel, setSel, api }) {
                 <h3>Checklist · {prog(t)}%</h3>
                 {t.steps.map(x => (
                     <Row key={x.id} id={x.id} onRemove={() => api.removeIn(t.id, 'steps', x.id)}>
-                        <input type="checkbox" checked={x.done} aria-label="Done" onChange={e => api.patchItem(t.id, 'done', x, e.target.checked, 'steps')} />
+                        <input type="checkbox" checked={x.done} aria-label="Done" onChange={e => { api.patchItem(t.id, 'done', x, e.target.checked, 'steps'); play(e.target.checked ? 'check' : 'uncheck') }} />
                         <div className="col"><input type="text" value={x.t} placeholder="Step to learn" aria-label="Step" onChange={e => api.patchItem(t.id, 't', x, e.target.value, 'steps')} /></div>
                         <button className="btn sm ghost" title="Add to today's todos" onClick={() => sendToday(x.t, 'task')}>→ Today</button>
                     </Row>
@@ -221,7 +223,7 @@ function Drawer({ data, sel, setSel, api }) {
                     <h3>Subtopics</h3>
                     {t.subs.map(x => (
                         <Row key={x.id} id={x.id} onRemove={() => api.removeIn(t.id, 'subs', x.id)}>
-                            <input type="checkbox" checked={x.status === 'done'} aria-label="Done" onChange={e => api.patchItem(t.id, 'status', x, e.target.checked ? 'done' : 'todo', 'subs')} />
+                            <input type="checkbox" checked={x.status === 'done'} aria-label="Done" onChange={e => { api.patchItem(t.id, 'status', x, e.target.checked ? 'done' : 'todo', 'subs'); play(e.target.checked ? 'check' : 'uncheck') }} />
                             <div className="col">
                                 <input type="text" value={x.title} placeholder="Subtopic title" aria-label="Subtopic title" onChange={e => api.patchItem(t.id, 'title', x, e.target.value, 'subs')} />
                                 <select value={x.priority} aria-label="Priority" onChange={e => api.patchItem(t.id, 'priority', x, e.target.value, 'subs')}>
@@ -261,7 +263,7 @@ function Drawer({ data, sel, setSel, api }) {
                 <h3>Projects</h3>
                 {t.proj.map(x => (
                     <Row key={x.id} id={x.id} onRemove={() => api.removeIn(t.id, 'proj', x.id)}>
-                        <input type="checkbox" checked={x.done} aria-label="Done" onChange={e => api.patchItem(t.id, 'done', x, e.target.checked, 'proj')} />
+                        <input type="checkbox" checked={x.done} aria-label="Done" onChange={e => { api.patchItem(t.id, 'done', x, e.target.checked, 'proj'); play(e.target.checked ? 'complete' : 'uncheck') }} />
                         <div className="col">
                             <input type="text" value={x.t} placeholder="Project name" aria-label="Project name" onChange={e => api.patchItem(t.id, 't', x, e.target.value, 'proj')} />
                             <input type="text" value={x.desc} placeholder="What to build and how to know it works" aria-label="Project description" onChange={e => api.patchItem(t.id, 'desc', x, e.target.value, 'proj')} />
@@ -409,12 +411,17 @@ export default function Roadmap() {
     const toggleDone = (t, el) => {
         const done = t.status !== 'done'
         api.patch(t.id, { status: done ? 'done' : 'todo' })
+        const isTopic = data.topics.some(x => x.id === t.id)
+        play(done ? (isTopic ? 'complete' : 'check') : 'uncheck')
         if (done && el) {
             const r = el.getBoundingClientRect()
             confetti(r.left + r.width / 2, r.top + r.height / 2)
         }
     }
-    const toggleGate = t => api.patchGate(t.id, { done: !t.gate.done })
+    const toggleGate = t => {
+        api.patchGate(t.id, { done: !t.gate.done })
+        play(t.gate.done ? 'uncheck' : 'gate')
+    }
     const openItem = id => setSel(id)
     const addTopic = () => {
         const t = norm({})

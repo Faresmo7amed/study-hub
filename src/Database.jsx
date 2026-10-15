@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { clamp, uid, useStore } from './shared'
+import { play } from './sound'
 
 /* ============================================================
    A small Notion-style database
@@ -851,7 +852,7 @@ function Cell({ db, table, row, prop, api, block }) {
                 </button>
                 {anchor && (
                     <OptionPop anchor={anchor} onClose={close} options={options} value={raw} multi={type === 'multiselect'}
-                        onChange={set} onCreate={type === 'status' ? null : o => api.addOption(table.id, prop.id, o)} />
+                        onChange={v => { set(v); if (type === 'status' && v === 'done') play('check') }} onCreate={type === 'status' ? null : o => api.addOption(table.id, prop.id, o)} />
                 )}
             </>
         )
@@ -877,7 +878,7 @@ function Cell({ db, table, row, prop, api, block }) {
     if (type === 'checkbox') {
         return (
             <div className="nt-cell nt-center">
-                <input type="checkbox" checked={!!raw} onChange={e => set(e.target.checked)} aria-label={prop.name} />
+                <input type="checkbox" checked={!!raw} onChange={e => { set(e.target.checked); play(e.target.checked ? 'check' : 'uncheck') }} aria-label={prop.name} />
             </div>
         )
     }
