@@ -323,6 +323,7 @@ function WeekBoard() {
         const t = week[day].find(x => x.id === id)
         if (t && t.done && t.doneOn) setStore('activity', cur => ({ ...cur, [t.doneOn]: Math.max(0, (cur[t.doneOn] || 1) - 1) }), {})
         update(d => { ensure(d)[day] = ensure(d)[day].filter(x => x.id !== id) })
+        play('delete')
     }
     const move = (from, id, to) => {
         if (from === to) return
@@ -331,6 +332,7 @@ function WeekBoard() {
             const i = w[from].findIndex(t => t.id === id)
             if (i >= 0) w[to].push(w[from].splice(i, 1)[0])
         })
+        play('move')
     }
     const carryOver = () => {
         const prev = todos[iso(addDays(ws, -7))]
@@ -345,6 +347,7 @@ function WeekBoard() {
                 }))
             })
         }
+        if (count) play('save')
         notify({ title: count ? `Carried over ${count} unfinished todo${count > 1 ? 's' : ''}` : 'Nothing to carry over', body: count ? 'They were copied to the same weekday this week.' : 'Last week has no unfinished todos.', icon: '↪️' })
     }
 
@@ -398,12 +401,18 @@ function removeEvent(ev) {
     if (!original) return
     setStore('events', cur => cur.filter(x => x.id !== ev.id), [])
     setStore('fired', cur => Object.fromEntries(Object.entries(cur).filter(([k]) => !k.startsWith(ev.id + '|'))), {})
-    play('uncheck')
+    play('delete')
     notify({
         title: 'Event deleted',
         body: original.title || 'Untitled event',
         icon: '🗑️',
-        actions: [{ label: 'Undo', onClick: () => setStore('events', cur => (cur.some(x => x.id === original.id) ? cur : [...cur, original]), []) }],
+        actions: [{
+            label: 'Undo',
+            onClick: () => {
+                setStore('events', cur => (cur.some(x => x.id === original.id) ? cur : [...cur, original]), [])
+                play('undo')
+            },
+        }],
     })
 }
 
@@ -417,6 +426,7 @@ function EventModal({ initial, onClose }) {
         if (!valid) return
         const clean = { ...ev, title: ev.title.trim(), remind: Number(ev.remind) }
         setStore('events', cur => (clean.id ? cur.map(x => (x.id === clean.id ? clean : x)) : [...cur, { ...clean, id: uid() }]), [])
+        play('save')
         onClose()
     }
     const remove = () => {

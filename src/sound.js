@@ -7,10 +7,11 @@ import { getStore } from './shared'
    Settings live in the local-only store key "sound" (they are not synced between devices).
    ============================================================ */
 
-export const SOUND_DEFAULTS = { on: true, volume: 0.7, cats: { items: true, rewards: true, reminders: true, focus: true } }
+export const SOUND_DEFAULTS = { on: true, volume: 0.7, cats: { items: true, edits: true, rewards: true, reminders: true, focus: true } }
 
 export const SOUND_CATS = {
-    items: 'Checking and adding items',
+    items: 'Checking items',
+    edits: 'Adding, deleting and undoing',
     rewards: 'Achievements and streaks',
     reminders: 'Event reminders',
     focus: 'Focus timer',
@@ -19,7 +20,14 @@ export const SOUND_CATS = {
 export const SOUND_INFO = {
     check: { label: 'Check an item', cat: 'items' },
     uncheck: { label: 'Uncheck an item', cat: 'items' },
-    add: { label: 'Add a todo', cat: 'items' },
+    add: { label: 'Add something', cat: 'edits' },
+    save: { label: 'Save or create', cat: 'edits' },
+    delete: { label: 'Delete', cat: 'edits' },
+    undo: { label: 'Undo or restore', cat: 'edits' },
+    move: { label: 'Move or reorder', cat: 'edits' },
+    tick: { label: 'Small change', cat: 'edits' },
+    pin: { label: 'Pin a note', cat: 'edits' },
+    archive: { label: 'Archive', cat: 'edits' },
     complete: { label: 'Finish something big', cat: 'rewards' },
     goal: { label: 'Daily goal reached', cat: 'rewards' },
     streak: { label: 'Streak day', cat: 'rewards' },
@@ -91,6 +99,32 @@ const SOUNDS = {
     },
     add() {
         tone(640, 0, 0.09, { gain: 0.12, slideTo: 960 })
+    },
+    save() {
+        tone(784, 0, 0.1, { type: 'triangle', gain: 0.18 })
+        tone(1174.7, 0.08, 0.22, { type: 'triangle', gain: 0.18 })
+    },
+    delete() {
+        tone(300, 0, 0.16, { type: 'triangle', gain: 0.18, slideTo: 150 })
+        tone(110, 0.02, 0.14, { gain: 0.22, slideTo: 55 })
+    },
+    undo() {
+        tone(420, 0, 0.1, { gain: 0.16, slideTo: 640 })
+        tone(640, 0.09, 0.14, { gain: 0.16, slideTo: 900 })
+    },
+    move() {
+        tone(480, 0, 0.05, { type: 'triangle', gain: 0.1 })
+    },
+    tick() {
+        tone(1500, 0, 0.035, { gain: 0.08 })
+    },
+    pin() {
+        tone(1000, 0, 0.04, { type: 'square', gain: 0.04 })
+        tone(1500, 0.03, 0.08, { gain: 0.12 })
+    },
+    archive() {
+        tone(260, 0, 0.18, { type: 'triangle', gain: 0.16, slideTo: 190 })
+        tone(130, 0.05, 0.15, { gain: 0.18, slideTo: 90 })
     },
     complete() {
         const run = [N.C5, N.E5, N.G5, N.C6]

@@ -306,6 +306,7 @@ function BackupModal({ data, setData, onClose }) {
             if (!Array.isArray(d.topics)) throw new Error('"topics" must be an array')
             setData({ title: String(d.title || ''), topics: d.topics.map(t => norm(t)) })
             onClose()
+            play('save')
             notify({ title: 'Roadmap imported', icon: '📥' })
         } catch (e) {
             setMsg('Invalid JSON: ' + e.message)
@@ -378,34 +379,49 @@ export default function Roadmap() {
             const target = list ? h.t[list].find(x => x.id === item.id) : h.t
             if (target) target[key] = value
         }),
-        addIn: (id, key, item) => update(d => {
-            const h = locate(d, id)
-            if (h) h.t[key].push(item)
-        }),
-        removeIn: (id, key, itemId) => update(d => {
-            const h = locate(d, id)
-            if (h) h.t[key] = h.t[key].filter(x => x.id !== itemId)
-        }),
-        move: (id, dir) => update(d => {
-            const h = locate(d, id)
-            if (!h) return
-            const i = h.arr.indexOf(h.t)
-            const j = i + dir
-            if (j < 0 || j >= h.arr.length) return
-            h.arr.splice(j, 0, h.arr.splice(i, 1)[0])
-        }),
-        duplicate: id => update(d => {
-            const h = locate(d, id)
-            if (!h) return
-            const copy = JSON.parse(JSON.stringify(h.t))
-            reid(copy)
-            copy.title = (copy.title || 'Untitled') + ' (copy)'
-            h.arr.splice(h.arr.indexOf(h.t) + 1, 0, copy)
-        }),
-        remove: id => update(d => {
-            const h = locate(d, id)
-            if (h) h.arr.splice(h.arr.indexOf(h.t), 1)
-        }),
+        addIn: (id, key, item) => {
+            update(d => {
+                const h = locate(d, id)
+                if (h) h.t[key].push(item)
+            })
+            play('add')
+        },
+        removeIn: (id, key, itemId) => {
+            update(d => {
+                const h = locate(d, id)
+                if (h) h.t[key] = h.t[key].filter(x => x.id !== itemId)
+            })
+            play('delete')
+        },
+        move: (id, dir) => {
+            update(d => {
+                const h = locate(d, id)
+                if (!h) return
+                const i = h.arr.indexOf(h.t)
+                const j = i + dir
+                if (j < 0 || j >= h.arr.length) return
+                h.arr.splice(j, 0, h.arr.splice(i, 1)[0])
+            })
+            play('move')
+        },
+        duplicate: id => {
+            update(d => {
+                const h = locate(d, id)
+                if (!h) return
+                const copy = JSON.parse(JSON.stringify(h.t))
+                reid(copy)
+                copy.title = (copy.title || 'Untitled') + ' (copy)'
+                h.arr.splice(h.arr.indexOf(h.t) + 1, 0, copy)
+            })
+            play('add')
+        },
+        remove: id => {
+            update(d => {
+                const h = locate(d, id)
+                if (h) h.arr.splice(h.arr.indexOf(h.t), 1)
+            })
+            play('delete')
+        },
     }
 
     const toggleDone = (t, el) => {
@@ -426,6 +442,7 @@ export default function Roadmap() {
     const addTopic = () => {
         const t = norm({})
         update(d => { d.topics.push(t) })
+        play('add')
         setSel(t.id)
         setTimeout(() => {
             const el = document.getElementById('rm-n-' + t.id)

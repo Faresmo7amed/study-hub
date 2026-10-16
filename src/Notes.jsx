@@ -83,7 +83,10 @@ function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onD
     const [pop, setPop] = useState(null)
     const open = kind => e => setPop({ kind, anchor: e.currentTarget })
     const close = () => setPop(null)
-    const toggleLabel = l => onChange({ ...note, labels: note.labels.includes(l) ? note.labels.filter(x => x !== l) : [...note.labels, l] })
+    const toggleLabel = l => {
+        play('tick')
+        onChange({ ...note, labels: note.labels.includes(l) ? note.labels.filter(x => x !== l) : [...note.labels, l] })
+    }
     const [newLabel, setNewLabel] = useState('')
 
     if (note.trashed) {
@@ -97,7 +100,7 @@ function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onD
     return (
         <div className="kp-tools">
             {onToggleList && <button className="icon-btn" onClick={onToggleList} title={note.items ? 'Hide checkboxes' : 'Show checkboxes'} aria-label="Toggle checklist">☑</button>}
-            <button className={'icon-btn' + (note.pinned ? ' on' : '')} onClick={() => onChange({ ...note, pinned: !note.pinned, archived: false })} title={note.pinned ? 'Unpin' : 'Pin'} aria-pressed={note.pinned} aria-label="Pin">📌</button>
+            <button className={'icon-btn' + (note.pinned ? ' on' : '')} onClick={() => { play('pin'); onChange({ ...note, pinned: !note.pinned, archived: false }) }} title={note.pinned ? 'Unpin' : 'Pin'} aria-pressed={note.pinned} aria-label="Pin">📌</button>
             <button className="icon-btn" onClick={open('color')} title="Colour" aria-label="Change colour">🎨</button>
             <button className="icon-btn" onClick={open('label')} title="Labels" aria-label="Edit labels">🏷️</button>
             {onDuplicate && <button className="icon-btn" onClick={onDuplicate} title="Duplicate" aria-label="Duplicate">⧉</button>}
@@ -108,7 +111,7 @@ function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onD
                     <div className="kp-swatches">
                         {COLOR_KEYS.map(c => (
                             <button key={c} className={'kp-sw' + (note.color === c ? ' on' : '')} data-c={c} style={cardStyle(c)} title={c} aria-label={c}
-                                onClick={() => { onChange({ ...note, color: c }); close() }}>{note.color === c ? '✓' : ''}</button>
+                                onClick={() => { play('tick'); onChange({ ...note, color: c }); close() }}>{note.color === c ? '✓' : ''}</button>
                         ))}
                     </div>
                 </Pop>
@@ -170,7 +173,7 @@ function NoteEditor({ note, onChange, autoFocus }) {
                     if (e.key === 'Enter') { e.preventDefault(); addAfter(it.id) }
                     if (e.key === 'Backspace' && !it.t && note.items.length > 1) { e.preventDefault(); removeItem(it.id, true) }
                 }} />
-            <button className="icon-btn" onClick={() => removeItem(it.id, false)} aria-label="Delete item">×</button>
+            <button className="icon-btn" onClick={() => { play('delete'); removeItem(it.id, false) }} aria-label="Delete item">×</button>
         </div>
     )
 
@@ -287,7 +290,10 @@ function LabelsModal({ labels, setLabels, notes, updateNotes, onClose }) {
     const add = e => {
         e.preventDefault()
         const v = name.trim()
-        if (v && !labels.includes(v)) setLabels([...labels, v])
+        if (v && !labels.includes(v)) {
+            setLabels([...labels, v])
+            play('add')
+        }
         setName('')
     }
     const rename = (old, next) => {
@@ -297,6 +303,7 @@ function LabelsModal({ labels, setLabels, notes, updateNotes, onClose }) {
         updateNotes(list => { list.forEach(n => { n.labels = n.labels.map(l => (l === old ? v : l)) }) })
     }
     const remove = l => {
+        play('delete')
         setLabels(labels.filter(x => x !== l))
         updateNotes(list => { list.forEach(n => { n.labels = n.labels.filter(x => x !== l) }) })
     }
@@ -347,9 +354,31 @@ export default function Notes() {
     const addLabel = l => { if (!labels.includes(l)) setLabels([...labels, l]) }
     const trash = n => {
         save({ ...n, trashed: Date.now(), pinned: false })
-        notify({ title: 'Note moved to trash', body: 'Open Trash to restore it.', icon: '🗑️' })
+        play('delete')
+        notify({
+            title: 'Note moved to trash',
+            body: n.title || 'Untitled note',
+            icon: '🗑️',
+            actions: [{ label: 'Undo', onClick: () => { save({ ...n, trashed: null }); play('undo') } }],
+        })
     }
-    const duplicate = n => save({ ...n, id: uid(), title: n.title ? n.title + ' (copy)' : '', pinned: false, created: Date.now(), edited: Date.now(), items: n.items ? n.items.map(i => ({ ...i, id: uid() })) : null })
+    const archive = n => {
+        const archiving = !n.archived
+        save({ ...n, archived: archiving, pinned: false })
+        play('archive')
+        if (archiving) {
+            notify({
+                title: 'Note archived',
+                body: n.title || 'Untitled note',
+                icon: '🗄️',
+                actions: [{ label: 'Undo', onClick: () => { save(n); play('undo') } }],
+            })
+        }
+    }
+    const duplicate = n => {
+        play('add')
+        save({ ...n, id: uid(), title: n.title ? n.title + ' (copy)' : '', pinned: false, created: Date.now(), edited: Date.now(), items: n.items ? n.items.map(i => ({ ...i, id: uid() })) : null })
+    }
     const forever = id => updateNotes(list => list.filter(n => n.id !== id))
 
     const q = query.trim().toLowerCase()
@@ -382,8 +411,8 @@ export default function Notes() {
 
     const cardFor = n => (
         <NoteCard key={n.id} note={n} labels={labels} onOpen={() => !n.trashed && setEditId(n.id)} onChange={save} onNewLabel={addLabel}
-            actions={n.trashed ? { onRestore: () => save({ ...n, trashed: null }), onDeleteForever: () => forever(n.id) }
-                : { onArchive: () => save({ ...n, archived: !n.archived, pinned: false }), onTrash: () => trash(n), onDuplicate: () => duplicate(n) }} />
+            actions={n.trashed ? { onRestore: () => { save({ ...n, trashed: null }); play('undo') }, onDeleteForever: () => { forever(n.id); play('delete') } }
+                : { onArchive: () => archive(n), onTrash: () => trash(n), onDuplicate: () => duplicate(n) }} />
     )
 
     const title = view === 'notes' ? 'Notes' : view === 'archive' ? 'Archive' : view === 'trash' ? 'Trash' : view.slice(6)
@@ -415,12 +444,12 @@ export default function Notes() {
                 </div>
 
                 {(view === 'notes' || view.startsWith('label:')) && !q && (
-                    <Composer labels={labels} onAdd={n => save(view.startsWith('label:') && !n.labels.includes(view.slice(6)) ? { ...n, labels: [...n.labels, view.slice(6)] } : n)} onNewLabel={addLabel} />
+                    <Composer labels={labels} onAdd={n => { play('save'); save(view.startsWith('label:') && !n.labels.includes(view.slice(6)) ? { ...n, labels: [...n.labels, view.slice(6)] } : n) }} onNewLabel={addLabel} />
                 )}
                 {view === 'trash' && (
                     <div className="kp-banner">
                         <span>Notes in the trash are deleted after {TRASH_DAYS} days.</span>
-                        {counts.trash > 0 && <button className="btn sm danger" onClick={() => updateNotes(list => list.filter(n => !n.trashed))}>Empty trash</button>}
+                        {counts.trash > 0 && <button className="btn sm danger" onClick={() => { updateNotes(list => list.filter(n => !n.trashed)); play('delete') }}>Empty trash</button>}
                     </div>
                 )}
 
@@ -443,7 +472,7 @@ export default function Notes() {
                         <div className="kp-foot">
                             <Toolbar note={editing} labels={labels} onChange={(n, nl) => { save(n); if (nl) addLabel(nl) }}
                                 onToggleList={() => save(editing.items ? toText(editing) : toList(editing))}
-                                onArchive={() => { save({ ...editing, archived: !editing.archived, pinned: false }); setEditId(null) }}
+                                onArchive={() => { archive(editing); setEditId(null) }}
                                 onTrash={() => { trash(editing); setEditId(null) }} onDuplicate={() => duplicate(editing)} />
                             <span className="muted small grow" style={{ textAlign: 'right' }}>Edited {fmtWhen(editing.edited)}</span>
                             <button className="btn sm ghost" onClick={closeEditor}>Close</button>

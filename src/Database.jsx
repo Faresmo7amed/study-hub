@@ -435,6 +435,11 @@ const uniqueName = (table, base) => {
 }
 
 function makeApi(update) {
+    // Run an edit, then play its sound
+    const act = (sound, fn) => (...args) => {
+        fn(...args)
+        play(sound)
+    }
     const findRow = (d, tid, rid) => d.tables[tid].rows.find(r => r.id === rid)
     const dropReverse = (d, prop) => {
         if (prop.type !== 'relation' || !prop.config || !prop.config.reverse) return
@@ -453,7 +458,7 @@ function makeApi(update) {
             const r = findRow(d, tid, rid)
             if (r) Object.assign(r, patch, { edited: Date.now() })
         }),
-        toggleLink: (tid, rid, pid, targetId) => update(d => {
+        toggleLink: act('tick', (tid, rid, pid, targetId) => update(d => {
             const prop = d.tables[tid].props.find(p => p.id === pid)
             const row = findRow(d, tid, rid)
             if (!prop || !row) return
@@ -470,8 +475,8 @@ function makeApi(update) {
             if (on) back.add(rid)
             else back.delete(rid)
             other.cells[rev] = [...back]
-        }),
-        addRow: (tid, id) => update(d => {
+        })),
+        addRow: act('add', (tid, id) => update(d => {
             const t = d.tables[tid]
             const row = { id, icon: '📄', created: Date.now(), edited: null, body: '', cells: {} }
             t.props.forEach(p => {
@@ -479,8 +484,8 @@ function makeApi(update) {
                 if (p.type === 'checkbox') row.cells[p.id] = false
             })
             t.rows.push(row)
-        }),
-        duplicateRow: (tid, rid) => update(d => {
+        })),
+        duplicateRow: act('add', (tid, rid) => update(d => {
             const t = d.tables[tid]
             const i = t.rows.findIndex(r => r.id === rid)
             if (i < 0) return
@@ -494,16 +499,16 @@ function makeApi(update) {
             const title = t.props[0].id
             copy.cells[title] = (copy.cells[title] || 'Untitled') + ' (copy)'
             t.rows.splice(i + 1, 0, copy)
-        }),
-        deleteRow: (tid, rid) => update(d => {
+        })),
+        deleteRow: act('delete', (tid, rid) => update(d => {
             d.tables[tid].rows = d.tables[tid].rows.filter(r => r.id !== rid)
             Object.values(d.tables).forEach(t => {
                 t.props.forEach(p => {
                     if (p.type === 'relation' && p.config.target === tid) t.rows.forEach(r => { if (r.cells[p.id]) r.cells[p.id] = r.cells[p.id].filter(x => x !== rid) })
                 })
             })
-        }),
-        addProp: (tid, { name, type, config }) => update(d => {
+        })),
+        addProp: act('save', (tid, { name, type, config }) => update(d => {
             const t = d.tables[tid]
             const id = uid()
             const prop = { id, name, type, width: type === 'checkbox' ? 100 : 180 }
@@ -520,8 +525,8 @@ function makeApi(update) {
             t.props.push(prop)
             if (type === 'status') t.rows.forEach(r => { r.cells[id] = 'todo' })
             if (type === 'checkbox') t.rows.forEach(r => { r.cells[id] = false })
-        }),
-        deleteProp: (tid, pid) => update(d => {
+        })),
+        deleteProp: act('delete', (tid, pid) => update(d => {
             const t = d.tables[tid]
             const prop = t.props.find(p => p.id === pid)
             if (!prop || prop.type === 'title') return
@@ -531,7 +536,7 @@ function makeApi(update) {
             if (t.sort && t.sort.prop === pid) t.sort = null
             t.filters = (t.filters || []).filter(f => f.prop !== pid)
             if (t.calc) delete t.calc[pid]
-        }),
+        })),
         patchProp: (tid, pid, patch) => update(d => {
             const prop = d.tables[tid].props.find(p => p.id === pid)
             if (prop) Object.assign(prop, patch)
@@ -556,7 +561,7 @@ function makeApi(update) {
             if (t.calc) delete t.calc[pid]
             if (t.sort && t.sort.prop === pid) t.sort = null
         }),
-        moveProp: (tid, pid, dir) => update(d => {
+        moveProp: act('move', (tid, pid, dir) => update(d => {
             const props = d.tables[tid].props
             const i = props.findIndex(p => p.id === pid)
             const j = i + dir
@@ -564,7 +569,7 @@ function makeApi(update) {
             const tmp = props[i]
             props[i] = props[j]
             props[j] = tmp
-        }),
+        })),
         setWidth: (tid, pid, width) => update(d => {
             const prop = d.tables[tid].props.find(p => p.id === pid)
             if (prop) prop.width = width
@@ -574,16 +579,16 @@ function makeApi(update) {
             const t = d.tables[tid]
             t.calc = { ...(t.calc || {}), [pid]: fn }
         }),
-        addOption: (tid, pid, option) => update(d => {
+        addOption: act('tick', (tid, pid, option) => update(d => {
             const prop = d.tables[tid].props.find(p => p.id === pid)
             if (prop) prop.options = [...(prop.options || []), option]
-        }),
+        })),
         editOption: (tid, pid, oid, patch) => update(d => {
             const prop = d.tables[tid].props.find(p => p.id === pid)
             const o = prop && (prop.options || []).find(x => x.id === oid)
             if (o) Object.assign(o, patch)
         }),
-        deleteOption: (tid, pid, oid) => update(d => {
+        deleteOption: act('delete', (tid, pid, oid) => update(d => {
             const t = d.tables[tid]
             const prop = t.props.find(p => p.id === pid)
             if (!prop) return
@@ -593,8 +598,8 @@ function makeApi(update) {
                 if (Array.isArray(v)) r.cells[pid] = v.filter(x => x !== oid)
                 else if (v === oid) r.cells[pid] = null
             })
-        }),
-        addTable: (id, name) => update(d => {
+        })),
+        addTable: act('save', (id, name) => update(d => {
             const pid = uid()
             const sid = uid()
             d.tables[id] = {
@@ -603,8 +608,8 @@ function makeApi(update) {
             }
             d.order.push(id)
             d.active = id
-        }),
-        deleteTable: tid => update(d => {
+        })),
+        deleteTable: act('delete', tid => update(d => {
             if (d.order.length <= 1) return
             delete d.tables[tid]
             d.order = d.order.filter(x => x !== tid)
@@ -614,7 +619,7 @@ function makeApi(update) {
                 t.rows.forEach(r => dead.forEach(id => { delete r.cells[id] }))
             })
             if (d.active === tid) d.active = d.order[0]
-        }),
+        })),
         setActive: id => update(d => { d.active = id }),
         reset: () => update(() => seedDB()),
     }
@@ -902,7 +907,7 @@ function Cell({ db, table, row, prop, api, block }) {
         return (
             <div className="nt-cell nt-stars" role="radiogroup" aria-label={prop.name}>
                 {[1, 2, 3, 4, 5].map(i => (
-                    <button key={i} className={i <= n ? 'on' : ''} onClick={() => set(n === i ? 0 : i)} aria-label={`${i} star${i > 1 ? 's' : ''}`}>★</button>
+                    <button key={i} className={i <= n ? 'on' : ''} onClick={() => { set(n === i ? 0 : i); play('tick') }} aria-label={`${i} star${i > 1 ? 's' : ''}`}>★</button>
                 ))}
             </div>
         )

@@ -215,6 +215,7 @@ function BackupModal({ onClose }) {
 
     const download = () => {
         downloadBackup()
+        play('save')
         notify({ title: 'Backup downloaded', body: 'Keep the file somewhere safe, like a cloud drive.', icon: '💾' })
     }
 
@@ -236,6 +237,7 @@ function BackupModal({ onClose }) {
 
     const restore = () => {
         importAll(pending.obj)
+        play('save')
         notify({ title: 'Backup restored', body: 'Your data is back.', icon: '✅' })
         onClose()
     }
