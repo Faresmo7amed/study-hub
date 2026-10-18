@@ -7,7 +7,7 @@ import { getStore } from './shared'
    Settings live in the local-only store key "sound" (they are not synced between devices).
    ============================================================ */
 
-export const SOUND_DEFAULTS = { on: true, volume: 0.7, cats: { items: true, edits: true, rewards: true, reminders: true, focus: true } }
+export const SOUND_DEFAULTS = { on: true, volume: 0.7, cats: { items: true, edits: true, rewards: true, reminders: true, focus: true, study: true } }
 
 export const SOUND_CATS = {
     items: 'Checking items',
@@ -15,6 +15,7 @@ export const SOUND_CATS = {
     rewards: 'Achievements and streaks',
     reminders: 'Event reminders',
     focus: 'Focus timer',
+    study: 'Study group',
 }
 
 export const SOUND_INFO = {
@@ -38,6 +39,10 @@ export const SOUND_INFO = {
     alarm: { label: 'Event starting', cat: 'reminders' },
     focus: { label: 'Focus session done', cat: 'focus' },
     breakover: { label: 'Break is over', cat: 'focus' },
+    studystart: { label: 'Start studying', cat: 'study' },
+    studyend: { label: 'Finish a study session', cat: 'study' },
+    overtake: { label: 'You passed a friend', cat: 'study' },
+    friendon: { label: 'A friend starts studying', cat: 'study' },
 }
 
 let ctx = null
@@ -179,6 +184,23 @@ const SOUNDS = {
         tone(N.A5, 0, 0.2, { gain: 0.2 })
         tone(N.E6, 0.18, 0.34, { gain: 0.2 })
     },
+    studystart() {
+        tone(N.A5, 0, 0.12, { type: 'triangle', gain: 0.2 })
+        tone(N.E6, 0.1, 0.28, { type: 'triangle', gain: 0.2 })
+    },
+    studyend() {
+        bell(N.G5, 0, 1.4, 0.22)
+        bell(N.C6, 0.25, 1.8, 0.22)
+    },
+    overtake() {
+        const run = [N.C5, N.E5, N.G5, N.C6]
+        run.forEach((f, i) => tone(f, i * 0.06, 0.12, { type: 'triangle', gain: 0.18 }))
+        tone(N.E6, 0.3, 0.4, { type: 'triangle', gain: 0.2 })
+    },
+    friendon() {
+        tone(N.E6, 0, 0.1, { gain: 0.14 })
+        tone(N.G6, 0.09, 0.2, { gain: 0.14 })
+    },
 }
 
 // Reward sounds are the long ones. If two arrive together (a streak day and a badge, for example) they play one after the other.
@@ -186,8 +208,8 @@ const REWARD_SECONDS = { complete: 1.4, goal: 1.9, streak: 1.5, gate: 1.4, badge
 let rewardFreeAt = 0
 
 /*
-  play('check')                  respects the master switch and the category switch
-  play('streak', { force: true })  ignores the category switch (used by the preview buttons)
+    play('check')                  respects the master switch and the category switch
+    play('streak', { force: true })  ignores the category switch (used by the preview buttons)
 */
 export function play(name, { force = false } = {}) {
     try {
@@ -210,7 +232,7 @@ export function play(name, { force = false } = {}) {
             SOUNDS[name]()
             window.dispatchEvent(new CustomEvent('studyhub-sound', { detail: name }))
         }
-        if (wait > 0) setTimeout(() => { try { ensure(); start() } catch {} }, wait)
+        if (wait > 0) setTimeout(() => { try { ensure(); start() } catch {return null} }, wait)
         else start()
-    } catch {}
+    } catch {return null}
 }

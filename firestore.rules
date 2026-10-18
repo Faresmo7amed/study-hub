@@ -3,18 +3,47 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Each user can only touch their own documents, and only the ten known keys
+    // Private data: each user can only touch their own documents, and only the known keys
     match /users/{uid}/data/{key} {
       allow read, delete: if request.auth != null && request.auth.uid == uid;
 
       allow create, update: if request.auth != null
         && request.auth.uid == uid
-        && key in ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps']
+        && key in ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps', 'studygroup']
         && request.resource.data.keys().hasOnly(['value', 'updatedAt', 'serverAt'])
         && request.resource.data.value is string
         && request.resource.data.value.size() < 950000
         && request.resource.data.updatedAt is number
         && request.resource.data.serverAt == request.time;
+    }
+
+    // Study groups: the group id is the invite code. Only members can read the member cards.
+    match /groups/{code} {
+      allow get: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['name', 'owner', 'createdAt'])
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 40
+        && request.resource.data.createdAt is number;
+
+      match /members/{uid} {
+        allow read: if request.auth != null
+          && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
+        allow create, update: if request.auth != null
+          && request.auth.uid == uid
+          && exists(/databases/$(database)/documents/groups/$(code))
+          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'updatedAt'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 24
+          && request.resource.data.days is map
+          && request.resource.data.total is number
+          && request.resource.data.studying is number
+          && request.resource.data.updatedAt is number;
+        allow delete: if request.auth != null && request.auth.uid == uid;
+      }
     }
 
     // Everything else is closed

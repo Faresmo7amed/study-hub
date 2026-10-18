@@ -18,7 +18,7 @@ function read(key, initial) {
         try {
             const raw = localStorage.getItem(PREFIX + key)
             if (raw !== null) value = JSON.parse(raw)
-        } catch {}
+        } catch {return null}
         cache.set(key, value)
     }
     return cache.get(key)
@@ -42,7 +42,7 @@ export const getStore = (key, initial) => read(key, initial)
   Everything else (theme, backup reminder, fired reminders, the sync bookkeeping itself) stays on the device.
 */
 // 'roadmap' is the old single-roadmap key. It is still synced so that other devices can migrate it to 'roadmaps'.
-export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps']
+export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps', 'studygroup']
 
 const changeHooks = new Set()
 export const onStoreChange = fn => {
@@ -53,7 +53,7 @@ export const onStoreChange = fn => {
 export function setStore(key, next, initial, silent = false) {
     const value = typeof next === 'function' ? next(read(key, initial)) : next
     cache.set(key, value)
-    try { localStorage.setItem(PREFIX + key, JSON.stringify(value)) } catch {}
+    try { localStorage.setItem(PREFIX + key, JSON.stringify(value)) } catch {return null}
     emit(key)
     if (!silent) changeHooks.forEach(fn => fn(key))
 }
@@ -62,7 +62,7 @@ export function setStore(key, next, initial, silent = false) {
 export const applyRemote = (key, value) => setStore(key, value, undefined, true)
 
 export function removeKey(key) {
-    try { localStorage.removeItem(PREFIX + key) } catch {}
+    try { localStorage.removeItem(PREFIX + key) } catch {return null}
     cache.delete(key)
     emit(key)
 }
@@ -94,7 +94,7 @@ export function clearLocalData() {
             if (k && k.startsWith(PREFIX) && k !== PREFIX + 'theme') doomed.push(k)
         }
         doomed.forEach(k => localStorage.removeItem(k))
-    } catch {}
+    } catch {return null}
     cache.clear()
 }
 
@@ -116,7 +116,7 @@ export function exportAll() {
             const key = localStorage.key(i)
             if (key && key.startsWith(PREFIX)) data[key.slice(PREFIX.length)] = JSON.parse(localStorage.getItem(key))
         }
-    } catch {}
+    } catch {return null}
     cache.forEach((value, key) => { if (!(key in data)) data[key] = value })
     delete data.sync // account bookkeeping, never part of a backup
     return { app: 'studyhub', version: 1, exportedAt: new Date().toISOString(), data }
@@ -394,7 +394,7 @@ export const useToasts = () => useSyncExternalStore(subToasts, () => toasts)
 export function systemNotify(title, body) {
     try {
         if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body })
-    } catch {}
+    } catch {return null}
 }
 
 export function confetti(x, y) {

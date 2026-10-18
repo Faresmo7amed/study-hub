@@ -3,7 +3,7 @@ import { downloadBackup, notify } from './shared'
 import * as fb from './firebase'
 import { resolveChoice, signOutAndWipe, startSync, syncNow, useSyncState } from './sync'
 
-const LABELS = { todos: 'Todos', activity: 'Streak history', focus: 'Focus sessions', events: 'Events', game: 'Badges', settings: 'Settings', database: 'Courses database', notes: 'Notes', labels: 'Note labels', roadmap: 'Roadmap (old)', roadmaps: 'Roadmaps' }
+const LABELS = { todos: 'Todos', activity: 'Streak history', focus: 'Focus sessions', events: 'Events', game: 'Badges', settings: 'Settings', database: 'Courses database', notes: 'Notes', labels: 'Note labels', roadmap: 'Roadmap (old)', roadmaps: 'Roadmaps', studygroup: 'Study Group' }
 const PHASE = {
     loading: ['…', 'Connecting'],
     signedout: ['☁️', 'Sign in'],

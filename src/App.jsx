@@ -9,11 +9,13 @@ import Roadmap from './Roadmap'
 import { AccountButton, AccountModal, CloudSync } from './Account'
 import { SoundButton, SoundModal } from './SoundSettings'
 import { play } from './sound'
+import StudyGroup from './StudyGroup'
 
 const PAGES = [
     { id: 'dashboard', label: 'Dashboard', icon: '◧' },
     { id: 'notes', label: 'Notes', icon: '🗒️' },
     { id: 'roadmap', label: 'Roadmap', icon: '🗺️' },
+    { id: 'studygroup', label: 'Study Group', icon: '👥' },
 ]
 
 const fromHash = () => {
@@ -311,6 +313,7 @@ export default function App() {
             <main>
                 {page === 'notes' && <Notes />}
                 {page === 'roadmap' && <Roadmap />}
+                {page === 'studygroup' && <StudyGroup />}
                 {page === 'dashboard' && <Dashboard />}
             </main>
             {backup && <BackupModal onClose={() => setBackup(false)} />}

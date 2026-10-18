@@ -93,3 +93,38 @@ export async function remove(uid, key) {
     const { F, db } = await load()
     await withTimeout(F.deleteDoc(F.doc(db, 'users', uid, 'data', key)))
 }
+
+/* ---------- study groups (shared between friends) ---------- */
+// groups/{code}                  { name, owner, createdAt }   the invite code is the document id
+// groups/{code}/members/{uid}    { name, days, total, studying, updatedAt }
+export async function createGroup(code, name, uid) {
+    const { F, db } = await load()
+    await withTimeout(F.setDoc(F.doc(db, 'groups', code), { name, owner: uid, createdAt: Date.now() }))
+}
+
+// The group's data, or null when no group has this code
+export async function groupInfo(code) {
+    const { F, db } = await load()
+    const snap = await withTimeout(F.getDoc(F.doc(db, 'groups', code)))
+    return snap.exists() ? snap.data() : null
+}
+
+export async function saveMember(code, uid, card) {
+    const { F, db } = await load()
+    await withTimeout(F.setDoc(F.doc(db, 'groups', code, 'members', uid), card))
+}
+
+export async function leaveGroup(code, uid) {
+    const { F, db } = await load()
+    await withTimeout(F.deleteDoc(F.doc(db, 'groups', code, 'members', uid)))
+}
+
+// Live updates: the callback runs now and again whenever a member's card changes. Returns the stop function.
+export async function watchMembers(code, onData, onError) {
+    const { F, db } = await load()
+    return F.onSnapshot(
+        F.collection(db, 'groups', code, 'members'),
+        snap => onData(snap.docs.map(d => ({ uid: d.id, ...d.data() }))),
+        onError,
+    )
+}
