@@ -128,3 +128,50 @@ export async function watchMembers(code, onData, onError) {
         onError,
     )
 }
+
+// groups/{code}/shares/{uid_...}   { owner, kind, title, data, updatedAt }   data is a JSON string snapshot
+export async function saveShare(code, id, share) {
+    const { F, db } = await load()
+    await withTimeout(F.setDoc(F.doc(db, 'groups', code, 'shares', id), share))
+}
+
+export async function deleteShare(code, id) {
+    const { F, db } = await load()
+    await withTimeout(F.deleteDoc(F.doc(db, 'groups', code, 'shares', id)))
+}
+
+export async function watchShares(code, onData, onError) {
+    const { F, db } = await load()
+    return F.onSnapshot(
+        F.collection(db, 'groups', code, 'shares'),
+        snap => onData(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+        onError,
+    )
+}
+
+// Live data of the group document itself (weekly goal, owner)
+export async function watchGroup(code, onData, onError) {
+    const { F, db } = await load()
+    return F.onSnapshot(F.doc(db, 'groups', code), snap => onData(snap.exists() ? snap.data() : null), onError)
+}
+
+// Only the group owner can do this (the rules check it)
+export async function setGroupGoal(code, minutes) {
+    const { F, db } = await load()
+    await withTimeout(F.updateDoc(F.doc(db, 'groups', code), { goal: minutes }))
+}
+
+// groups/{code}/cheers/{from_to}   { from, to, kind, n, at }
+export async function saveCheer(code, id, cheer) {
+    const { F, db } = await load()
+    await withTimeout(F.setDoc(F.doc(db, 'groups', code, 'cheers', id), cheer))
+}
+
+export async function watchCheers(code, onData, onError) {
+    const { F, db } = await load()
+    return F.onSnapshot(
+        F.collection(db, 'groups', code, 'cheers'),
+        snap => onData(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+        onError,
+    )
+}

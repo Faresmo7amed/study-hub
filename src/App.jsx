@@ -9,7 +9,8 @@ import Roadmap from './Roadmap'
 import { AccountButton, AccountModal, CloudSync } from './Account'
 import { SoundButton, SoundModal } from './SoundSettings'
 import { play } from './sound'
-import StudyGroup from './StudyGroup'
+import StudyGroup, { StudyPublisher } from './StudyGroup'
+
 
 const PAGES = [
     { id: 'dashboard', label: 'Dashboard', icon: '◧' },
@@ -320,6 +321,7 @@ export default function App() {
             {account && <AccountModal onClose={() => setAccount(false)} />}
             {soundOpen && <SoundModal onClose={() => setSoundOpen(false)} />}
             <CloudSync />
+            <StudyPublisher />
             <Toasts />
             <Reminders />
             <GameWatcher />

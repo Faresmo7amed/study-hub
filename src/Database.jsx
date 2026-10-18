@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { clamp, uid, useStore } from './shared'
+import { clamp, getStore, uid, useStore } from './shared'
 import { play } from './sound'
+
 
 /* ============================================================
    A small Notion-style database
@@ -116,6 +117,43 @@ const blankBlock = name => {
             },
         },
     }
+}
+
+// What it does: returns every group of tables, even if the database was never saved yet.
+// When to use it: when another page needs to list the user's tables.
+// eslint-disable-next-line react-refresh/only-export-components
+export const loadBlocks = () => normalizeStore(getStore('database', seedStore)).blocks
+
+// What it does: turns one table into a small plain object (titles, progress, linked tasks) that is safe to send to friends.
+// When to use it: when sharing a table. Progress comes from a "percent checked" rollup, else the status or checkbox column.
+// eslint-disable-next-line react-refresh/only-export-components
+export function snapshotTable(block, table) {
+    const titleId = table.props[0].id
+    const pct = table.props.find(p => p.type === 'rollup' && p.config && p.config.fn === 'percent_checked')
+    const status = table.props.find(p => p.type === 'status')
+    const check = table.props.find(p => p.type === 'checkbox')
+    const rel = table.props.find(p => p.type === 'relation' && block.tables[p.config.target])
+    const doneIn = (t, r) => {
+        const c = t.props.find(p => p.type === 'checkbox')
+        const s = t.props.find(p => p.type === 'status')
+        return c ? !!r.cells[c.id] : s ? r.cells[s.id] === 'done' : false
+    }
+    const rows = table.rows.slice(0, 60).map(r => {
+        const item = { n: String(r.cells[titleId] || 'Untitled').slice(0, 80), i: r.icon }
+        if (pct) {
+            const v = plain(block, pct, valueOf(block, table, r, pct))
+            if (typeof v === 'number') item.p = v
+        }
+        if (status) item.s = r.cells[status.id] || 'todo'
+        if (check) item.d = !!r.cells[check.id]
+        if (rel) {
+            const other = block.tables[rel.config.target]
+            item.sub = (r.cells[rel.id] || []).map(id => other.rows.find(x => x.id === id)).filter(Boolean).slice(0, 40)
+                .map(x => ({ n: String(x.cells[other.props[0].id] || 'Untitled').slice(0, 80), d: doneIn(other, x) }))
+        }
+        return item
+    })
+    return { rows }
 }
 
 /* ============================================================

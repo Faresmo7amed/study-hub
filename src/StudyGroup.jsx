@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { addDays, getStore, hms, iso, notify, parseISO, setStore, todayISO, useNow, useStore, weekStart } from './shared'
+import { addDays, dayIndex, getStore, hms, iso, notify, onStoreChange, parseISO, setStore, todayISO, useNow, useStore, weekStart } from './shared'
+import { loadBlocks, snapshotTable } from './Database'
+import { loadRoadmaps, snapshotRoadmap } from './Roadmap'
 import * as fb from './firebase'
 import { useSyncState } from './sync'
 import { play } from './sound'
@@ -16,11 +18,62 @@ const KEEP_DAYS = 120           // how many days of history go into your card
 const MAX_SESSION = 360         // a forgotten timer never adds more than 6 hours
 const ONLINE_MAX = 12 * 3600000 // "studying now" expires after 12 hours
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-const DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0 }
+const DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0, profile: {}, celebrated: {} }
 const EMPTY = []
 const PERIODS = { today: 'Today', week: 'This week', total: 'All time' }
 const TITLES = ['👑 Top of the pack', '🥈 Chasing the crown', '🥉 On the podium']
+const CHEERS = { clap: '👏', fire: '🔥', muscle: '💪' }
+const COOLDOWN = 20000 // ms before you can cheer the same friend again
+// [key, label, hint, max length]
+const PROFILE_FIELDS = [
+    ['focus', 'Studying', 'ITI prep, React, IELTS…', 60],
+    ['bio', 'Bio', 'A line about you', 160],
+    ['city', 'City', 'Alexandria', 40],
+    ['email', 'Email', 'name@example.com', 80],
+    ['link', 'Link', 'github.com/you', 100],
+]
+const isHttp = v => /^https?:\/\//i.test(v)
 
+// What it does: turns a picked image into a 96x96 square JPEG data URL (about 5 KB).
+// When to use it: for the profile photo. Firebase Storage needs a paid plan, so the photo lives inside your card.
+const toAvatar = file => new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+        const side = Math.min(img.width, img.height)
+        const canvas = document.createElement('canvas')
+        canvas.width = 96
+        canvas.height = 96
+        canvas.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 96, 96)
+        URL.revokeObjectURL(url)
+        resolve(canvas.toDataURL('image/jpeg', 0.8))
+    }
+    img.onerror = () => {
+        URL.revokeObjectURL(url)
+        reject(new Error('That file is not an image.'))
+    }
+    img.src = url
+})
+
+// What it does: subscribes to one live feed of the open group and returns its latest value.
+// When to use it: for each live list or document of a group (cheers, the group document).
+function useFeed(watch, activeId, uid, empty) {
+    const [feed, setFeed] = useState({ id: '', value: empty })
+    useEffect(() => {
+        if (!activeId || !uid) return
+        let off = null
+        let dead = false
+        watch(activeId, value => setFeed({ id: activeId, value }), () => {}).then(stop => {
+            if (dead) stop()
+            else off = stop
+        }).catch(() => {})
+        return () => {
+            dead = true
+            if (off) off()
+        }
+    }, [activeId, uid]) // eslint-disable-line react-hooks/exhaustive-deps
+    return feed.id === activeId ? feed.value : empty
+}
 const fmtMin = m => {
     const n = Math.round(m)
     return n >= 60 ? `${Math.floor(n / 60)}h ${n % 60}m` : `${n}m`
@@ -53,13 +106,18 @@ const fail = e => notify({ title: 'Cloud problem', body: (e && e.message) || 'So
 function publish(user, ids) {
     const s = getStore('studygroup', DEFAULT)
     if (!user || !s.name) return
-    const cutoff = iso(addDays(new Date(), -KEEP_DAYS))
+    const stamp = new Date()
+    const cutoff = iso(addDays(stamp, -KEEP_DAYS))
+    const week = getStore('todos', {})[iso(weekStart(stamp))]
+    const planned = week ? week[dayIndex(stamp)] : []
     const card = {
         name: s.name,
         days: Object.fromEntries(Object.entries(s.days).filter(([k]) => k >= cutoff)),
         total: s.total,
         studying: getStore('studyrun', {}).start || 0,
-        updatedAt: Date.now(),
+        todos: { done: planned.filter(t => t.done).length, total: planned.length },
+        updatedAt: stamp.getTime(),
+        profile: Object.fromEntries(Object.entries(s.profile || {}).filter(([, v]) => v)),
     }
     const list = ids || s.groups.map(g => g.id)
     list.forEach(id => fb.saveMember(id, user.uid, card).catch(fail))
@@ -92,6 +150,41 @@ function stopSession(user) {
         notify({ title: 'Session saved', body: `${minutes} min added to today.`, icon: '📚' })
     }
     publish(user)
+}
+
+// What it does: sends a cheer to a friend, unless you cheered the same friend a few seconds ago.
+// When to use it: from the cheer buttons. "count" is how many cheers you already sent that friend.
+const lastCheer = {}
+function cheerFriend(groupId, uid, toUid, kind, count) {
+    const t = Date.now()
+    if (t - (lastCheer[toUid] || 0) < COOLDOWN) {
+        notify({ title: 'Easy there', body: 'Wait a few seconds before cheering the same friend again.', icon: '⏳' })
+        return
+    }
+    lastCheer[toUid] = t
+    fb.saveCheer(groupId, `${uid}_${toUid}`, { from: uid, to: toUid, kind, n: count + 1, at: t }).then(() => play('cheer')).catch(fail)
+}
+
+// What it does: keeps your card fresh while the app is open. It sends your todo counts 20 s after you
+// change a todo, and once a few seconds after the app loads.
+// When to use it: mounted once in App, so it works on every page.
+export function StudyPublisher() {
+    const { user } = useSyncState()
+    const uid = user ? user.uid : ''
+    useEffect(() => {
+        if (!user) return
+        let timer = setTimeout(() => publish(user), 5000)
+        const off = onStoreChange(key => {
+            if (key !== 'todos') return
+            clearTimeout(timer)
+            timer = setTimeout(() => publish(user), 20000)
+        })
+        return () => {
+            clearTimeout(timer)
+            off()
+        }
+    }, [uid]) // eslint-disable-line react-hooks/exhaustive-deps
+    return null
 }
 
 /* ---------- small forms ---------- */
@@ -136,6 +229,213 @@ const Notice = ({ title, text }) => (
     </div>
 )
 
+/* Child of the rows, the profile dialog and the profile view. Shows the photo, or the first letter. */
+function Avatar({ name, photo, size = 36 }) {
+    const ok = typeof photo === 'string' && photo.startsWith('data:image/jpeg;base64,')
+    const box = { width: size, height: size }
+    return ok
+        ? <img className="sg-avatar" src={photo} alt="" style={box} />
+        : <span className="sg-avatar" style={{ ...box, fontSize: size * 0.4 }}>{(name || '?')[0].toUpperCase()}</span>
+}
+
+/* Parent: StudyGroup. Child: Avatar. Edit your name, photo and optional info. */
+function ProfileModal({ name: startName, profile, onSave, onClose }) {
+    const [name, setName] = useState(startName)
+    const [p, setP] = useState(profile || {})
+    const [error, setError] = useState('')
+    const set = (key, value) => setP(cur => ({ ...cur, [key]: value }))
+
+    const pick = async e => {
+        const file = e.target.files[0]
+        e.target.value = ''
+        if (!file) return
+        try {
+            set('photo', await toAvatar(file))
+            setError('')
+        } catch (err) {
+            setError(err.message)
+        }
+    }
+    const save = e => {
+        e.preventDefault()
+        if (!name.trim()) return
+        const clean = Object.fromEntries(Object.entries(p).map(([k, v]) => [k, String(v || '').trim()]).filter(([, v]) => v))
+        if (clean.link && !isHttp(clean.link)) clean.link = 'https://' + clean.link
+        onSave(name.trim(), clean)
+    }
+
+    return (
+        <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+            <form className="modal" onSubmit={save} role="dialog" aria-label="Edit profile">
+                <h2>Your profile</h2>
+                <p className="muted small" style={{ marginTop: -6 }}>Only the name is required. Everything else is optional, only members of your groups can see it, and an empty field is not shared.</p>
+                <div className="sg-photo">
+                    <Avatar name={name} photo={p.photo} size={72} />
+                    <div className="row">
+                        <label className="btn sm">Upload photo<input type="file" accept="image/*" hidden onChange={pick} /></label>
+                        {p.photo && <button type="button" className="btn sm ghost" onClick={() => set('photo', '')}>Remove</button>}
+                    </div>
+                </div>
+                {error && <p style={{ color: 'var(--bad)' }} role="alert">{error}</p>}
+                <label className="field"><span>Display name (required)</span>
+                    <input value={name} maxLength={24} onChange={e => setName(e.target.value)} />
+                </label>
+                {PROFILE_FIELDS.map(([key, label, hint, max]) => (
+                    <label key={key} className="field"><span>{label} (optional)</span>
+                        {key === 'bio'
+                            ? <textarea rows={3} maxLength={max} value={p[key] || ''} placeholder={hint} onChange={e => set(key, e.target.value)} />
+                            : <input maxLength={max} value={p[key] || ''} placeholder={hint} onChange={e => set(key, e.target.value)} />}
+                    </label>
+                ))}
+                <div className="row"><span className="grow" /><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="submit" className="btn primary" disabled={!name.trim()}>Save profile</button></div>
+            </form>
+        </div>
+    )
+}
+
+/* Parent: StudyGroup. Child: Avatar. A friend's profile and stats. */
+function ProfileView({ r, isMe, cheerCount, onCheer, onClose }) {
+    const p = r.profile
+    return (
+        <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+            <div className="modal" role="dialog" aria-label={`${r.name}'s profile`}>
+                <div className="sg-pv">
+                    <Avatar name={r.name} photo={p.photo} size={72} />
+                    <div>
+                        <h2 style={{ margin: 0 }}>{r.name}{isMe ? ' (you)' : ''}</h2>
+                        {p.focus && <p className="muted" style={{ margin: 0 }}>📖 {p.focus}</p>}
+                        {r.on && <p style={{ margin: 0 }}>🟢 studying now</p>}
+                    </div>
+                </div>
+                {p.bio && <p>{p.bio}</p>}
+                <ul className="sg-info">
+                    {p.city && <li>📍 {p.city}</li>}
+                    {p.email && <li>✉️ <a href={`mailto:${p.email}`}>{p.email}</a></li>}
+                    {p.link && <li>🔗 {isHttp(p.link) ? <a href={p.link} target="_blank" rel="noopener noreferrer">{p.link}</a> : p.link}</li>}
+                </ul>
+                <div className="sg-pstats">
+                    <div><b>{fmtMin(r.today)}</b><span>today</span></div>
+                    <div><b>{fmtMin(r.week)}</b><span>this week</span></div>
+                    <div><b>{fmtMin(r.total)}</b><span>all time</span></div>
+                    <div><b>🔥 {r.streak}</b><span>streak</span></div>
+                    <div><b>{r.best}</b><span>best streak</span></div>
+                    <div><b>💌 {cheerCount}</b><span>cheers</span></div>
+                </div>
+                <div className="row" style={{ marginTop: 14 }}>
+                    {!isMe && Object.entries(CHEERS).map(([k, e]) => <button key={k} className="btn" onClick={() => onCheer(r.uid, k)}>{e} Cheer {r.name}</button>)}
+                    <span className="grow" /><button className="btn" onClick={onClose}>Close</button>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+const STATUS_ICON = { todo: '⚪', doing: '🟡', done: '✅' }
+// What it does: reads a share's JSON text and returns the object, or null when the text is broken.
+// When to use it: when parsing data that came from another user, because it may be invalid.
+const parseShare = text => {
+    try {
+        return JSON.parse(text)
+    } catch {
+        return null
+    }
+}
+
+/* Parent: StudyGroup opens this. Child: nothing. Lets you pick what to share. */
+function ShareModal({ groupName, uid, mine, onPut, onRemove, onClose }) {
+    const [items] = useState(() => {
+        const roadmaps = loadRoadmaps()
+        return [
+            ...loadBlocks().flatMap(b => b.order.map(tid => {
+                const t = b.tables[tid]
+                return { id: `${uid}_t_${b.id}_${tid}`, kind: 'goals', title: `${t.icon} ${t.name}`, make: () => snapshotTable(b, t) }
+            })),
+            ...roadmaps.order.filter(id => roadmaps.maps[id]).map(id => ({
+                id: `${uid}_r_${id}`, kind: 'roadmap', title: `🗺️ ${roadmaps.maps[id].title || 'Untitled roadmap'}`, make: () => snapshotRoadmap(roadmaps, id),
+            })),
+        ]
+    })
+    return (
+        <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+            <div className="modal" role="dialog" aria-label="Share with the group">
+                <h2>Share with {groupName}</h2>
+                <p className="muted small" style={{ marginTop: -6 }}>Friends see titles, progress and linked tasks. Notes, resources and everything else stay private. A share is a snapshot: press Update after you make progress.</p>
+                <ul className="sg-shares">
+                    {items.map(it => (
+                        <li key={it.id}>
+                            <div className="grow"><b>{it.title}</b><small className="muted">{it.kind === 'roadmap' ? 'Roadmap' : 'Goals table'}</small></div>
+                            {mine.has(it.id) ? (
+                                <>
+                                    <button className="btn sm" onClick={() => onPut(it.id, it.kind, it.title, it.make())}>Update</button>
+                                    <button className="btn sm danger" onClick={() => onRemove(it.id)}>Unshare</button>
+                                </>
+                            ) : (
+                                <button className="btn sm primary" onClick={() => onPut(it.id, it.kind, it.title, it.make())}>Share</button>
+                            )}
+                        </li>
+                    ))}
+                </ul>
+                <div className="row" style={{ marginTop: 14 }}><span className="grow" /><button className="btn" onClick={onClose}>Close</button></div>
+            </div>
+        </div>
+    )
+}
+
+/* Parent: StudyGroup. Child: nothing. Shows one friend's shared snapshot. */
+function ShareView({ share, ownerName, onClose }) {
+    const data = parseShare(share.data)
+    const bar = pct => <div className="bar"><i className={pct >= 100 ? 'full' : ''} style={{ width: Math.min(100, pct) + '%' }} /></div>
+    return (
+        <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+            <div className="modal sg-view" role="dialog" aria-label={share.title}>
+                <h2>{share.title}</h2>
+                <p className="muted small" style={{ marginTop: -6 }}>Shared by {ownerName} · updated {new Date(share.updatedAt).toLocaleDateString()}</p>
+                {!data && <p>This share could not be read.</p>}
+                {data && share.kind === 'roadmap' && (
+                    <>
+                        <p><b>{data.pct}%</b> of the roadmap is done</p>
+                        {bar(data.pct)}
+                        <ul className="sg-items">
+                            {data.topics.map((t, i) => (
+                                <li key={i}>
+                                    <div className="row"><span>{STATUS_ICON[t.s]}</span><b className="grow">{i + 1}. {t.t}</b><span>{t.pct}%</span></div>
+                                    {bar(t.pct)}
+                                    {t.subs.length > 0 && (
+                                        <details>
+                                            <summary>{t.subs.filter(x => x.s === 'done').length}/{t.subs.length} subtopics</summary>
+                                            <ul>{t.subs.map((x, j) => <li key={j}>{STATUS_ICON[x.s]} {x.t}</li>)}</ul>
+                                        </details>
+                                    )}
+                                </li>
+                            ))}
+                        </ul>
+                    </>
+                )}
+                {data && share.kind === 'goals' && (
+                    <ul className="sg-items">
+                        {data.rows.map((r, i) => (
+                            <li key={i}>
+                                <div className="row">
+                                    <span>{r.i}</span><b className="grow">{r.n}</b>
+                                    <span>{r.p != null ? `${r.p}%` : r.d != null ? (r.d ? '✅' : '⚪') : r.s ? STATUS_ICON[r.s] : ''}</span>
+                                </div>
+                                {r.p != null && bar(r.p)}
+                                {r.sub && r.sub.length > 0 && (
+                                    <details>
+                                        <summary>{r.sub.filter(x => x.d).length}/{r.sub.length} tasks done</summary>
+                                        <ul>{r.sub.map((x, j) => <li key={j}>{x.d ? '✅' : '⚪'} {x.n}</li>)}</ul>
+                                    </details>
+                                )}
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                <div className="row" style={{ marginTop: 14 }}><span className="grow" /><button className="btn" onClick={onClose}>Close</button></div>
+            </div>
+        </div>
+    )
+}
+
 /* ============================================================
    Page
    ============================================================ */
@@ -148,16 +448,52 @@ export default function StudyGroup() {
     const now = useNow(1000)
     const [period, setPeriod] = useState('today')
     const [adding, setAdding] = useState(false)
-    const [renaming, setRenaming] = useState(false)
+    const [editing, setEditing] = useState(false)
     const [feed, setFeed] = useState({ id: '', list: EMPTY })
     const seen = useRef(null)
     const rank = useRef(null)
+    const [shareFeed, setShareFeed] = useState({ id: '', list: EMPTY })
+    const [sharing, setSharing] = useState(false)
+    const [viewing, setViewing] = useState(null)
+    const seenShares = useRef(null)
+    const [profileId, setProfileId] = useState(null)
+    const seenCheers = useRef(null)
 
     const active = s.groups.find(g => g.id === s.active) || s.groups[0]
     const activeId = active ? active.id : ''
     const members = feed.id === activeId ? feed.list : EMPTY
+    const shares = shareFeed.id === activeId ? shareFeed.list : EMPTY
 
     // Live cards of the open group
+    
+    // Live list of what the group shared
+    useEffect(() => {
+        if (!activeId || !uid) return
+        let off = null
+        let dead = false
+        fb.watchShares(activeId, list => setShareFeed({ id: activeId, list }), () => {}).then(stop => {
+            if (dead) stop()
+            else off = stop
+        }).catch(() => {})
+        return () => {
+            dead = true
+            if (off) off()
+        }
+    }, [activeId, uid])
+
+    // A friend shares something new
+    useEffect(() => {
+        if (shareFeed.id !== activeId) return
+        const before = seenShares.current
+        seenShares.current = { id: activeId, ids: new Set(shareFeed.list.map(x => x.id)) }
+        if (!before || before.id !== activeId) return
+        shareFeed.list.forEach(x => {
+            if (x.owner === uid || before.ids.has(x.id)) return
+            const who = members.find(m => m.uid === x.owner)
+            notify({ title: `${who ? who.name : 'A friend'} shared something`, body: x.title, icon: '🎁' })
+            play('add')
+        })
+    }, [shareFeed]) // eslint-disable-line react-hooks/exhaustive-deps
     useEffect(() => {
         if (!activeId || !uid) return
         let off = null
@@ -183,7 +519,8 @@ export default function StudyGroup() {
             const base = m.days || {}
             const days = { ...base, [today]: (base[today] || 0) + live }
             const { streak, best } = streakOf(days, today)
-            return { uid: m.uid, name: m.name || '?', on, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live, streak, best }
+            const todos = m.todos && iso(new Date(m.updatedAt || 0)) === today ? m.todos : null
+            return { uid: m.uid, name: m.name || '?', on, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live, streak, best, todos, profile: m.profile || {} }
         })
     }, [members, now])
 
@@ -191,6 +528,35 @@ export default function StudyGroup() {
     const order = useMemo(() => [...rows].sort((a, b) => b[period] - a[period] || byName(a, b)), [rows, period])
     const todayOrder = useMemo(() => [...rows].sort((a, b) => b.today - a.today || byName(a, b)), [rows])
     const myRank = todayOrder.findIndex(r => r.uid === uid)
+    const cheers = useFeed(fb.watchCheers, activeId, uid, EMPTY)
+    const group = useFeed(fb.watchGroup, activeId, uid, null)
+    const goal = (group && group.goal) || 0
+    const isOwner = Boolean(group) && group.owner === uid
+    const weekTotal = rows.reduce((n, r) => n + r.week, 0)
+
+    // A friend cheers you
+    useEffect(() => {
+        if (cheers === EMPTY) return
+        const before = seenCheers.current
+        seenCheers.current = { id: activeId, at: Object.fromEntries(cheers.map(c => [c.id, c.at])) }
+        if (!before || before.id !== activeId) return
+        cheers.forEach(c => {
+            if (c.to !== uid || c.at === before.at[c.id]) return
+            const who = members.find(m => m.uid === c.from)
+            notify({ title: `${who ? who.name : 'A friend'} cheered you ${CHEERS[c.kind] || '👏'}`, body: 'Keep going, they are counting on you!', icon: '💌' })
+            play('cheer')
+        })
+    }, [cheers]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    // The group reaches its weekly goal (celebrated once per group and week)
+    useEffect(() => {
+        if (!goal || weekTotal < goal) return
+        const key = `${activeId}|${iso(weekStart(now))}`
+        if ((s.celebrated || {})[key]) return
+        update(d => { d.celebrated = { ...(d.celebrated || {}), [key]: true } })
+        notify({ title: 'Group goal reached!', body: `Together you studied ${fmtMin(weekTotal)} this week.`, icon: '🎉' })
+        play('groupgoal')
+    }, [goal, weekTotal]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // A friend starts studying
     useEffect(() => {
@@ -221,7 +587,6 @@ export default function StudyGroup() {
     /* ----- actions ----- */
     const saveName = name => {
         update(d => { d.name = name })
-        setRenaming(false)
         play('save')
         publish(user)
     }
@@ -256,7 +621,8 @@ export default function StudyGroup() {
         }
     }
     const leave = () => {
-        if (!window.confirm(`Leave "${active.name}"? Your card is removed from it.`)) return
+        if (!window.confirm(`Leave "${active.name}"? Your card and shares are removed from it.`)) return
+        shares.filter(x => x.owner === uid).forEach(x => fb.deleteShare(active.id, x.id).catch(() => {}))
         fb.leaveGroup(active.id, user.uid).catch(fail)
         update(d => {
             d.groups = d.groups.filter(g => g.id !== active.id)
@@ -272,6 +638,29 @@ export default function StudyGroup() {
             notify({ title: 'Your invite code', body: active.id, icon: '📋' })
         }
     }
+    const saveProfile = (name, profile) => {
+        update(d => {
+            d.name = name
+            d.profile = profile
+        })
+        setEditing(false)
+        play('save')
+        publish(user)
+    }
+    const sendCheer = (toUid, kind) => cheerFriend(activeId, uid, toUid, kind, (cheers.find(c => c.id === `${uid}_${toUid}`) || {}).n || 0)
+    const changeGoal = () => {
+        const raw = window.prompt('Weekly goal for the whole group, in hours (0 removes it)', goal ? String(Math.round(goal / 60)) : '20')
+        if (raw === null) return
+        const hours = Number(raw)
+        if (!Number.isFinite(hours) || hours < 0 || hours > 1000) return notify({ title: 'Enter a number of hours', body: 'For example 20.', icon: '🔢' })
+        fb.setGroupGoal(activeId, Math.round(hours * 60)).then(() => play('save')).catch(fail)
+    }
+    const putShare = (id, kind, title, data) => {
+        fb.saveShare(activeId, id, { owner: uid, kind, title: title.slice(0, 80), data: JSON.stringify(data), updatedAt: Date.now() })
+            .then(() => play('save'))
+            .catch(fail)
+    }
+    const removeShare = id => fb.deleteShare(activeId, id).then(() => play('delete')).catch(fail)
 
     /* ----- gates ----- */
     if (sync.phase === 'off') return <Notice title="Cloud sync is not set up" text="The Study Group needs Firebase. Follow FIREBASE_SETUP.md first." />
@@ -280,6 +669,12 @@ export default function StudyGroup() {
 
     /* ----- derived for the screen ----- */
     const today = iso(now)
+    const cheered = {}
+    cheers.forEach(c => { if (members.some(m => m.uid === c.from)) cheered[c.to] = (cheered[c.to] || 0) + (c.n || 0) })
+    const profileRow = profileId ? rows.find(r => r.uid === profileId) : null
+    const sharedByMe = new Set(shares.filter(x => x.owner === uid).map(x => x.id))
+    const viewed = viewing ? shares.find(x => x.id === viewing) : null
+    const viewedOwner = viewed ? (viewed.owner === uid ? 'you' : (members.find(m => m.uid === viewed.owner) || { name: 'a friend' }).name) : ''
     const elapsed = run.start ? now.getTime() - run.start : 0
     const liveMin = Math.min(MAX_SESSION, Math.floor(elapsed / 60000))
     const myToday = (s.days[today] || 0) + liveMin
@@ -303,9 +698,8 @@ export default function StudyGroup() {
             <header className="sg-head">
                 <h1>Study Group</h1>
                 <span className="muted">Studying as <b>{s.name}</b></span>
-                <button className="btn sm ghost" onClick={() => setRenaming(!renaming)}>Change name</button>
+                                <button className="btn sm ghost" onClick={() => setEditing(true)}>Edit profile</button>
             </header>
-            {renaming && <NameForm initial={s.name} onSave={saveName} onCancel={() => setRenaming(false)} />}
 
             <section className="card sg-timer" aria-label="Study timer">
                 <div>
@@ -346,6 +740,17 @@ export default function StudyGroup() {
                         </div>
                     </div>
                     <p className="sg-coach">{coach}</p>
+                    <div className="sg-goalbox">
+                        <div className="row">
+                            <b>Weekly group goal</b>
+                            <span className="muted small grow">{goal ? `${fmtMin(weekTotal)} of ${fmtMin(goal)} together` : 'No goal yet'}</span>
+                            {isOwner && <button className="btn sm" onClick={changeGoal}>{goal ? 'Change' : 'Set a goal'}</button>}
+                        </div>
+                        {goal > 0 && <div className="bar"><i className={weekTotal >= goal ? 'full' : ''} style={{ width: Math.min(100, (100 * weekTotal) / goal) + '%' }} /></div>}
+                        <p className="muted small" style={{ margin: 0 }}>
+                            {goal ? (weekTotal >= goal ? '🎉 Goal reached! Time to aim higher.' : `${fmtMin(goal - weekTotal)} to go. Every minute counts, ${s.name}!`) : isOwner ? 'Set a weekly target so everyone studies toward the same number.' : 'The group owner can set a weekly goal.'}
+                        </p>
+                    </div>
                     <div className="seg" role="group" aria-label="Period">
                         {Object.entries(PERIODS).map(([k, l]) => <button key={k} className={'btn sm' + (period === k ? ' on' : '')} onClick={() => setPeriod(k)}>{l}</button>)}
                     </div>
@@ -353,19 +758,47 @@ export default function StudyGroup() {
                         {order.map((r, i) => (
                             <li key={r.uid} className={'sg-row' + (r.uid === uid ? ' me' : '')}>
                                 <span className="sg-rank">{i + 1}</span>
-                                <span className="sg-avatar">{r.name[0].toUpperCase()}</span>
-                                <div className="grow">
-                                    <b>{r.name}{r.uid === uid ? ' (you)' : ''}</b>
-                                    <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : ''}</small>
-                                </div>
+                                <button className="sg-who" onClick={() => setProfileId(r.uid)} aria-label={`Open ${r.name}'s profile`}>
+                                    <Avatar name={r.name} photo={r.profile.photo} />
+                                    <div className="grow">
+                                        <b>{r.name}{r.uid === uid ? ' (you)' : ''}</b>
+                                        <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} todos today` : ''}</small>
+                                    </div>
+                                </button>
+                                {cheered[r.uid] > 0 && <span className="small" title="Cheers received">💌 {cheered[r.uid]}</span>}
+                                {r.uid !== uid && (
+                                    <span className="sg-cheers">
+                                        {Object.entries(CHEERS).map(([k, e]) => <button key={k} className="icon-btn" title={`Cheer ${r.name}`} aria-label={`Cheer ${r.name} ${e}`} onClick={() => sendCheer(r.uid, k)}>{e}</button>)}
+                                    </span>
+                                )}
                                 <span className="sg-streak" title={`Best streak: ${r.best}`}>🔥 {r.streak}</span>
                                 <b className="sg-min">{fmtMin(r[period])}</b>
                             </li>
                         ))}
                     </ol>
                     {!order.length && <p className="muted small">Loading the group…</p>}
+                    <div className="sg-sharehead">
+                        <h3>Shared with the group</h3>
+                        <button className="btn sm" onClick={() => setSharing(true)}>Share goals or a roadmap</button>
+                    </div>
+                    {!shares.length && <p className="muted small">Nothing shared yet. Share a goals table or a roadmap so your friends can follow your progress.</p>}
+                    <ul className="sg-shares">
+                        {shares.map(x => {
+                            const who = members.find(m => m.uid === x.owner)
+                            return (
+                                <li key={x.id}>
+                                    <div className="grow"><b>{x.title}</b><small className="muted">by {x.owner === uid ? 'you' : who ? who.name : 'a friend'}</small></div>
+                                    <button className="btn sm" onClick={() => setViewing(x.id)}>Open</button>
+                                </li>
+                            )
+                        })}
+                    </ul>
                 </section>
             )}
+            {sharing && active && <ShareModal groupName={active.name} uid={uid} mine={sharedByMe} onPut={putShare} onRemove={removeShare} onClose={() => setSharing(false)} />}
+            {viewed && <ShareView share={viewed} ownerName={viewedOwner} onClose={() => setViewing(null)} />}
+            {editing && <ProfileModal name={s.name} profile={s.profile} onSave={saveProfile} onClose={() => setEditing(false)} />}
+            {profileRow && <ProfileView r={profileRow} isMe={profileRow.uid === uid} cheerCount={cheered[profileRow.uid] || 0} onCheer={sendCheer} onClose={() => setProfileId(null)} />}
         </div>
     )
 }
@@ -397,4 +830,13 @@ const CSS = `
 .sg-avatar{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:var(--ac);color:#fff;font-weight:700;flex:none}
 .sg-streak{font-weight:600;white-space:nowrap}.sg-min{font-variant-numeric:tabular-nums;min-width:64px;text-align:right}
 @media(max-width:640px){.sg-timer{grid-template-columns:1fr}.sg-clock{font-size:44px}}
+.sg-sharehead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;border-top:1px solid var(--ln);padding-top:14px}
+.sg-sharehead h3{font-size:18px}
+.sg-shares{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.sg-shares li{display:flex;gap:10px;align-items:center;background:var(--sf2);border:1px solid var(--ln);border-radius:10px;padding:8px 12px}
+.sg-shares .grow{display:grid;min-width:0}
+.sg-view{width:min(620px,100%)}
+.sg-items{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:12px}
+.sg-items details{margin-top:6px;font-size:14px}
+.sg-items details ul{margin:6px 0 0;padding-left:20px;display:grid;gap:3px}
 `

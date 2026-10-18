@@ -18,7 +18,21 @@ service cloud.firestore {
     }
 
     // Study groups: the group id is the invite code. Only members can read the member cards.
-    match /groups/{code} {
+            match /groups/{code} {
+
+      // A profile may only hold these text fields, and the photo must be our own small JPEG
+      function profileOk(p) {
+        return p is map
+          && p.keys().hasOnly(['photo', 'bio', 'email', 'link', 'city', 'focus'])
+          && p.get('photo', '').size() < 24000
+          && (p.get('photo', '') == '' || p.get('photo', '').matches('data:image/jpeg;base64,.*'))
+          && p.get('bio', '').size() <= 160
+          && p.get('email', '').size() <= 80
+          && p.get('link', '').size() <= 100
+          && p.get('city', '').size() <= 40
+          && p.get('focus', '').size() <= 60;
+      }
+
       allow get: if request.auth != null;
       allow create: if request.auth != null
         && request.resource.data.keys().hasOnly(['name', 'owner', 'createdAt'])
@@ -27,6 +41,13 @@ service cloud.firestore {
         && request.resource.data.name.size() > 0
         && request.resource.data.name.size() <= 40
         && request.resource.data.createdAt is number;
+      // Only the owner can change the weekly goal, and nothing else
+      allow update: if request.auth != null
+        && resource.data.owner == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['goal'])
+        && request.resource.data.goal is number
+        && request.resource.data.goal >= 0
+        && request.resource.data.goal <= 60000;
 
       match /members/{uid} {
         allow read: if request.auth != null
@@ -34,15 +55,50 @@ service cloud.firestore {
         allow create, update: if request.auth != null
           && request.auth.uid == uid
           && exists(/databases/$(database)/documents/groups/$(code))
-          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'todos', 'profile', 'updatedAt'])
           && request.resource.data.name is string
           && request.resource.data.name.size() > 0
           && request.resource.data.name.size() <= 24
           && request.resource.data.days is map
           && request.resource.data.total is number
           && request.resource.data.studying is number
+          && request.resource.data.get('todos', {}) is map
+          && profileOk(request.resource.data.get('profile', {}))
           && request.resource.data.updatedAt is number;
         allow delete: if request.auth != null && request.auth.uid == uid;
+      }
+
+      match /shares/{shareId} {
+        allow read: if request.auth != null
+          && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
+        allow create, update: if request.auth != null
+          && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid))
+          && shareId.matches(request.auth.uid + '_.*')
+          && request.resource.data.keys().hasOnly(['owner', 'kind', 'title', 'data', 'updatedAt'])
+          && request.resource.data.owner == request.auth.uid
+          && request.resource.data.kind in ['goals', 'roadmap']
+          && request.resource.data.title is string
+          && request.resource.data.title.size() <= 80
+          && request.resource.data.data is string
+          && request.resource.data.data.size() < 200000
+          && request.resource.data.updatedAt is number;
+        allow delete: if request.auth != null && resource.data.owner == request.auth.uid;
+      }
+
+      // One document per (sender, receiver) pair. A new cheer overwrites the old one and raises the counter.
+      match /cheers/{cheerId} {
+        allow read: if request.auth != null
+          && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
+        allow create, update: if request.auth != null
+          && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid))
+          && request.resource.data.keys().hasOnly(['from', 'to', 'kind', 'n', 'at'])
+          && request.resource.data.from == request.auth.uid
+          && request.resource.data.to is string
+          && cheerId == request.auth.uid + '_' + request.resource.data.to
+          && request.resource.data.kind in ['clap', 'fire', 'muscle']
+          && request.resource.data.n is number
+          && request.resource.data.at is number;
+        allow delete: if request.auth != null && resource.data.from == request.auth.uid;
       }
     }
 

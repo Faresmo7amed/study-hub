@@ -143,6 +143,22 @@ const reid = x => {
     if (x.id) x.id = uid()
     Object.values(x).forEach(reid)
 }
+// What it does: returns the user's roadmaps, even if they were never saved yet.
+// eslint-disable-next-line react-refresh/only-export-components
+export const loadRoadmaps = () => getStore('roadmaps', initialStore)
+
+// What it does: turns one roadmap into plain data for friends (titles, status, priority, progress).
+// Linked roadmaps are already counted in the status and percentages. Notes and resources stay private.
+// eslint-disable-next-line react-refresh/only-export-components
+export function snapshotRoadmap(store, id) {
+    const maps = store.maps
+    const m = maps[id]
+    const one = t => ({ t: (t.title || 'Untitled').slice(0, 80), s: effStatus(t, maps), p: t.priority })
+    return {
+        pct: mapProgress(m, maps).pct,
+        topics: m.topics.map(t => ({ ...one(t), pct: prog(t, maps), subs: t.subs.map(one) })),
+    }
+}
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const md = s => esc(s || '')
     .split('\n')

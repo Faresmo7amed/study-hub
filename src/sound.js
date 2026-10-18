@@ -43,6 +43,8 @@ export const SOUND_INFO = {
     studyend: { label: 'Finish a study session', cat: 'study' },
     overtake: { label: 'You passed a friend', cat: 'study' },
     friendon: { label: 'A friend starts studying', cat: 'study' },
+    cheer: { label: 'A friend cheers you', cat: 'study' },
+    groupgoal: { label: 'Group goal reached', cat: 'study' },
 }
 
 let ctx = null
@@ -200,6 +202,17 @@ const SOUNDS = {
     friendon() {
         tone(N.E6, 0, 0.1, { gain: 0.14 })
         tone(N.G6, 0.09, 0.2, { gain: 0.14 })
+    },
+    cheer() {
+        tone(N.G5, 0, 0.08, { type: 'triangle', gain: 0.18 })
+        tone(N.C6, 0.07, 0.1, { type: 'triangle', gain: 0.18 })
+        tone(N.E6, 0.14, 0.28, { type: 'triangle', gain: 0.2 })
+    },
+    groupgoal() {
+        bell(N.C6, 0, 1.4, 0.2)
+        bell(N.E6, 0.15, 1.4, 0.18)
+        bell(N.G6, 0.3, 1.5, 0.18)
+        bell(N.C7, 0.45, 1.8, 0.14)
     },
 }
 
