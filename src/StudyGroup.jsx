@@ -314,12 +314,12 @@ function ProfileView({ r, isMe, cheerCount, onCheer, onClose }) {
                     {p.link && <li>🔗 {isHttp(p.link) ? <a href={p.link} target="_blank" rel="noopener noreferrer">{p.link}</a> : p.link}</li>}
                 </ul>
                 <div className="sg-pstats">
-                    <div><b>{fmtMin(r.today)}</b><span>today</span></div>
-                    <div><b>{fmtMin(r.week)}</b><span>this week</span></div>
-                    <div><b>{fmtMin(r.total)}</b><span>all time</span></div>
-                    <div><b>🔥 {r.streak}</b><span>streak</span></div>
-                    <div><b>{r.best}</b><span>best streak</span></div>
-                    <div><b>💌 {cheerCount}</b><span>cheers</span></div>
+                    <div><b>{fmtMin(r.today)}</b><span> today</span></div>
+                    <div><b>{fmtMin(r.week)}</b><span> this week</span></div>
+                    <div><b>{fmtMin(r.total)}</b><span> all time</span></div>
+                    <div><b>🔥 {r.streak}</b><span> streak</span></div>
+                    <div><b>{r.best}</b><span> best streak</span></div>
+                    <div><b>💌 {cheerCount}</b><span> cheers</span></div>
                 </div>
                 <div className="row" style={{ marginTop: 14 }}>
                     {!isMe && Object.entries(CHEERS).map(([k, e]) => <button key={k} className="btn" onClick={() => onCheer(r.uid, k)}>{e} Cheer {r.name}</button>)}
