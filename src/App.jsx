@@ -10,7 +10,7 @@ import { AccountButton, AccountModal, CloudSync } from './Account'
 import { SoundButton, SoundModal } from './SoundSettings'
 import { play } from './sound'
 import StudyGroup, { StudyPublisher } from './StudyGroup'
-
+import { LeftRail, RightRail } from './Rails'
 
 const PAGES = [
     { id: 'dashboard', label: 'Dashboard', icon: '◧' },
@@ -31,6 +31,7 @@ function TopBar({ page, go, onBackup, onAccount, onSound }) {
     const now = useNow(60000)
     const stale = !meta.lastBackup || now.getTime() - meta.lastBackup > 7 * 86400000
     const [theme, setTheme] = useStore('theme', 'system')
+    const [ui, setUi] = useStore('ui', { left: true, right: true })
     const [perm, setPerm] = useState(() => ('Notification' in window ? Notification.permission : 'denied'))
 
     useEffect(() => {
@@ -86,6 +87,8 @@ function TopBar({ page, go, onBackup, onAccount, onSound }) {
                         <span aria-hidden="true">💾</span><span className="app-lbl"> Backup</span>{stale && <span className="app-dot" role="img" aria-label="Backup recommended" />}
                     </button>
                     <SoundButton onClick={onSound} />
+                    <button className="icon-btn app-railbtn" onClick={() => setUi({ ...ui, left: !ui.left })} aria-pressed={ui.left} aria-label="Toggle left sidebar" title="Toggle left sidebar">◧</button>
+                    <button className="icon-btn app-railbtn" onClick={() => setUi({ ...ui, right: !ui.right })} aria-pressed={ui.right} aria-label="Toggle right sidebar" title="Toggle right sidebar">◨</button>
                     <button className="icon-btn" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">◐</button>
                 </div>
             </div>
@@ -288,7 +291,7 @@ export default function App() {
     const [backup, setBackup] = useState(false)
     const [account, setAccount] = useState(false)
     const [soundOpen, setSoundOpen] = useState(false)
-
+    const [ui] = useStore('ui', { left: true, right: true })
     // Ask the browser not to evict our data when disk space runs low
     useEffect(() => {
         if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {})
@@ -311,12 +314,16 @@ export default function App() {
             <style>{GLOBAL_CSS}</style>
             <style>{CSS}</style>
             <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} onSound={() => setSoundOpen(true)} />
-            <main>
-                {page === 'notes' && <Notes />}
-                {page === 'roadmap' && <Roadmap />}
-                {page === 'studygroup' && <StudyGroup />}
-                {page === 'dashboard' && <Dashboard />}
-            </main>
+            <div className="app-shell">
+                {ui.left && page !== 'notes' && <LeftRail />}
+                <main>
+                    {page === 'notes' && <Notes />}
+                    {page === 'roadmap' && <Roadmap />}
+                    {page === 'studygroup' && <StudyGroup />}
+                    {page === 'dashboard' && <Dashboard />}
+                </main>
+                {ui.right && <RightRail />}
+            </div>
             {backup && <BackupModal onClose={() => setBackup(false)} />}
             {account && <AccountModal onClose={() => setAccount(false)} />}
             {soundOpen && <SoundModal onClose={() => setSoundOpen(false)} />}
@@ -344,12 +351,39 @@ const CSS = `
 .app-chip.lvl b{display:block;height:100%;background:var(--ok);transition:width .5s}
 .app-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wip);margin-left:6px}
 .flame-on{display:inline-block;animation:flicker 1.1s ease-in-out infinite}
+.app-railbtn{display:none}
+.app-shell{display:flex;align-items:flex-start;max-width:1900px;margin:0 auto}
+.app-shell>main{flex:1;min-width:0}
+.rail{display:none;flex:none;width:260px;gap:14px;align-content:start;position:sticky;top:70px;max-height:calc(100vh - 78px);overflow:auto;padding:20px 0 20px 16px;scrollbar-width:thin}
+.rail.r{padding:20px 16px 20px 0}
+@media(min-width:1100px){.rail.l{display:grid}.app-railbtn{display:inline-block}}
+@media(min-width:1400px){.rail.r{display:grid}}
+.rail-card{padding:14px;display:grid;gap:10px}
+.rail-card h3{font-size:16px}
+.rail .bar{height:8px;border-radius:8px;background:var(--ln);overflow:hidden}
+.rail .bar i{display:block;height:100%;border-radius:8px;background:var(--ac);transition:width .5s}.rail .bar i.full{background:var(--ok)}
+.rail-todos,.rail-up{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.rail-todos li{display:flex;gap:8px;align-items:flex-start;overflow-wrap:anywhere}
+.rail-todos li.done span{text-decoration:line-through;color:var(--mu)}
+.rail-todos input{margin-top:3px;flex:none}
+.rail-add{display:grid;gap:6px}
+.rail textarea{min-height:90px}
+.rail-up li{display:grid}
+.rail-quote{margin:0;font:italic 500 14px/1.45 var(--head)}
 @media(max-width:640px){
-.app-top-in{gap:10px;padding:10px 12px}
-.app-nav{order:3;width:100%}.app-nav button{flex:1;padding:6px 6px;white-space:nowrap}
-.app-right{gap:6px}
+.app-top-in{gap:8px;padding:8px 12px;flex-wrap:nowrap}
+.app-brand{font-size:17px;flex:none}
+.app-mark{width:30px;height:30px}
+.app-right{flex:1;gap:4px;flex-wrap:nowrap;overflow-x:auto;justify-content:flex-start;scrollbar-width:none}
+.app-right::-webkit-scrollbar{display:none}
+.app-right>*{flex:none}
 .app-lbl{display:none}
-.app-chip{padding:3px 9px}
+.app-chip{padding:3px 8px}
+.app-nav{position:fixed;left:0;right:0;bottom:0;z-index:45;border-radius:0;border-width:1px 0 0;background:var(--sf);padding:4px 6px calc(4px + env(safe-area-inset-bottom));gap:2px}
+.app-nav button{flex:1;display:grid;justify-items:center;gap:1px;padding:6px 2px;font-size:11px;white-space:nowrap}
+.app-nav button>span{font-size:18px;line-height:1.2}
+.app-shell>main{padding-bottom:68px}
+.toasts{bottom:76px}
 }
-@media(max-width:380px){.app-chip.lvl i{display:none}.app-brand{font-size:17px}.app-nav{padding:2px}.app-nav button{font-size:13px;padding:6px 2px}}
+@media(max-width:380px){.app-chip.lvl i{display:none}.app-brand{font-size:0}}
 `

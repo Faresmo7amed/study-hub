@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { addTodoToday, confetti, getStore, isStored, notify, uid, useStore } from './shared'
 import { play } from './sound'
+import { Icon, IconPicker } from './Icons'
+import { cleanIcon } from './iconUtils'
 
 /* ============================================================
    Roadmap: a vertical, snake-shaped learning path
@@ -28,6 +30,7 @@ const norm = (t, top = true) => {
     if (!STATUS[o.status]) o.status = 'todo'
     if (typeof o.ref !== 'string' || !o.ref) o.ref = null // id of another roadmap this item points to
     o.est = Math.max(0, Number(t.est) || 0)
+    o.icon = cleanIcon(t.icon)
     return o
 }
 
@@ -152,7 +155,14 @@ const reid = x => {
 // What it does: returns the user's roadmaps, even if they were never saved yet.
 // eslint-disable-next-line react-refresh/only-export-components
 export const loadRoadmaps = () => getStore('roadmaps', initialStore)
-
+// eslint-disable-next-line react-refresh/only-export-components
+export function nextUp(store) {
+    const m = store.maps[store.active] || store.maps[store.order[0]]
+    if (!m) return null
+    const left = itemsOf(m).filter(t => effStatus(t, store.maps) !== 'done')
+    const t = left.find(x => x.priority === 'must') || left[0]
+    return t ? { title: t.title || 'Untitled', icon: t.icon || '', roadmap: m.title, pct: mapProgress(m, store.maps).pct } : null
+}
 // What it does: turns one roadmap into plain data for friends (titles, status, priority, progress).
 // Linked roadmaps are already counted in the status and percentages. Notes and resources stay private.
 // eslint-disable-next-line react-refresh/only-export-components
@@ -164,7 +174,7 @@ export function snapshotRoadmap(store, id) {
     const maps = store.maps
     const m = maps[id]
     const item = (t, top) => ({
-        id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40), est: t.est || 0,
+        id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40), est: t.est || 0, icon: t.icon && t.icon.length <= 6000 ? t.icon : '',
         priority: t.priority, status: effStatus(t, maps), pct: prog(t, maps), ref: null,
         subs: top ? t.subs.map(s => item(s, false)) : [],
         gate: top && t.gate ? { name: t.gate.name, desc: t.gate.desc, highlight: t.gate.highlight, done: t.gate.done } : null,
@@ -200,7 +210,7 @@ onDrop={e => { if (!onMoveTo) return; e.preventDefault(); onMoveTo(e.dataTransfe
                 aria-label={`Toggle ${t.title || 'item'} done`} aria-pressed={status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
             {linked && <button className="rm-go" onClick={() => onGoRef(linked.id)} title={`Open the ${linked.title} roadmap`} aria-label={`Open the ${linked.title} roadmap`}>↗</button>}
             <button className="rm-body" onClick={() => onOpen(t.id)}>
-                <b>{n ? n + '. ' : ''}{t.title || 'Untitled'}</b>
+                <b>{n ? n + '. ' : ''}{t.icon && <span className="rm-ic"><Icon value={t.icon} size={n ? 18 : 15} /></span>}{t.title || 'Untitled'}</b>
                 {n && (t.when || t.est > 0) && <em>{[t.when, t.est > 0 && `${t.est} h`].filter(Boolean).join(' · ')}</em>}
                 {n && t.desc && <small>{t.desc}</small>}
                 {linked && <span className="rm-ref">↗ {linked.title}</span>}
@@ -292,6 +302,8 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
             </div>
 
             {topText('title', p ? 'Subtopic title' : 'Topic title', { className: 'rm-h', autoFocus: !t.title })}
+            <div className="rm-lb">Icon</div>
+            <IconPicker value={t.icon} allowNone onChange={v => api.patch(t.id, { icon: v })} />   
             <div className="row" style={{ marginTop: 8 }}>
                 <div className="grow">{topText('desc', 'Short description')}</div>
                 <div style={{ width: 140 }}>{topText('when', 'Timeframe')}</div>
@@ -1171,4 +1183,5 @@ const CSS = `
 .rm-view .rm-body,.rm-view .rm-dm,.rm-view .rm-ch{cursor:default}
 .p-must,.p-rec,.p-nice,.p-opt,.p-adv{border-color:var(--pc);background:color-mix(in srgb,var(--pc) 14%,var(--sf))}
 .p-adv{--pc:var(--c-adv);border-width:3px;border-style:double}
+.rm-ic{margin-right:6px;display:inline-block;vertical-align:-3px}
 `

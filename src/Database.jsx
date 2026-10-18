@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom'
 import { clamp, getStore, uid, useStore } from './shared'
 import { play } from './sound'
-
+import { Icon, IconPicker } from './Icons'
+import { textIcon } from './iconUtils'
 
 /* ============================================================
    A small Notion-style database
@@ -45,7 +46,6 @@ const ROLLUPS = {
     count: 'Count all', filled: 'Count values', empty: 'Count empty', checked: 'Count checked / done', unchecked: 'Count unchecked',
     percent_checked: 'Percent checked / done', sum: 'Sum', avg: 'Average', min: 'Min', max: 'Max', list: 'Show original',
 }
-const EMOJI = ['📄', '🎯', '📚', '🎓', '🎬', '▶️', '🏔️', '🟧', '🟦', '🟨', '🟩', '🟥', '⚛️', '🐍', '☕', '🧠', '💻', '🛠️', '🧪', '📝', '📊', '🔥', '⭐', '🚀', '🏆', '🧩', '🎨', '🔒', '🌐', '🗄️', '📱', '🎧']
 
 /* ---------- seed data (the Goals / Tasks example) ---------- */
 function seedDB() {
@@ -751,8 +751,8 @@ function TypeList({ current, onPick, disabled = [] }) {
 
 function IconPop({ anchor, onClose, onPick }) {
     return (
-        <Pop anchor={anchor} onClose={onClose} width={250}>
-            <div className="nt-emoji">{EMOJI.map(e => <button key={e} onClick={() => onPick(e)}>{e}</button>)}</div>
+        <Pop anchor={anchor} onClose={onClose} width={300}>
+            <IconPicker onChange={onPick} />
         </Pop>
     )
 }
@@ -814,7 +814,7 @@ function RelationPop({ anchor, onClose, other, value, onToggle }) {
                 {rows.map(r => (
                     <label key={r.id} className="nt-opt">
                         <input type="checkbox" checked={value.includes(r.id)} onChange={() => onToggle(r.id)} />
-                        <span>{r.icon}</span><span className="grow nt-trunc">{r.cells[other.props[0].id] || 'Untitled'}</span>
+                        <Icon value={r.icon} size={16} /><span className="grow nt-trunc">{r.cells[other.props[0].id] || 'Untitled'}</span>
                     </label>
                 ))}
                 {!rows.length && <p className="muted small nt-pad">{other.rows.length ? 'No matches.' : `${other.name} has no rows yet.`}</p>}
@@ -859,7 +859,7 @@ function Cell({ db, table, row, prop, api, block }) {
     if (type === 'title') {
         return (
             <div className="nt-cell nt-titlecell">
-                <button className="nt-icon" onClick={open} aria-label="Change icon">{row.icon}</button>
+                <button className="nt-icon" onClick={open} aria-label="Change icon"><Icon value={row.icon} size={17} /></button>
                 {editing
                     ? <TextInput value={raw} onSave={v => { set(v.trim()); setEditing(false) }} onCancel={() => setEditing(false)} />
                     : <button className="nt-ttext" onClick={() => setEditing(true)}>{raw || <span className="muted">Untitled</span>}</button>}
@@ -933,7 +933,7 @@ function Cell({ db, table, row, prop, api, block }) {
         return (
             <>
                 <button className="nt-cell nt-click nt-fill" onClick={open} aria-label={`Edit ${prop.name}`}>
-                    {linked.map(r => <span key={r.id} className="nt-rel">{r.icon} {r.cells[other.props[0].id] || 'Untitled'}</span>)}
+                    {linked.map(r => <span key={r.id} className="nt-rel"><Icon value={r.icon} size={14} /> {r.cells[other.props[0].id] || 'Untitled'}</span>)}
                 </button>
                 {anchor && <RelationPop anchor={anchor} onClose={close} other={other} value={raw || []} onToggle={id => api.toggleLink(table.id, row.id, prop.id, id)} />}
             </>
@@ -995,7 +995,7 @@ function ConfigForm({ db, table, type, config, onChange, creating }) {
                 <label className="field"><span>Related table</span>
                     <select value={config.target || ''} disabled={!creating} onChange={e => set({ target: e.target.value })}>
                         <option value="">Choose a table</option>
-                        {db.order.map(id => <option key={id} value={id}>{db.tables[id].icon} {db.tables[id].name}</option>)}
+                        {db.order.map(id => <option key={id} value={id}>{textIcon(db.tables[id].icon)} {db.tables[id].name}</option>)}
                     </select>
                 </label>
                 {creating && config.target && config.target !== table.id && (
@@ -1320,7 +1320,7 @@ function Peek({ db, table, row, api, onClose }) {
         <aside className="nt-peek" aria-label="Row details">
             <div className="row">
                 <button className="btn sm" onClick={onClose}>Close</button>
-                <span className="grow muted small">{table.icon} {table.name}</span>
+                <span className="grow muted small"><Icon value={table.icon} size={15} /> {table.name}</span>
             </div>
             <div className="nt-bigtitle"><Cell db={db} table={table} row={row} prop={table.props[0]} api={api} block /></div>
             {table.props.slice(1).map(p => (
@@ -1380,7 +1380,7 @@ function DatabaseBlock({ blockId, canRemove, onRemove }) {
             <div className="nt-tabs" role="tablist">
                 {db.order.map(id => (
                     <button key={id} role="tab" aria-selected={id === table.id} className={id === table.id ? 'on' : ''} onClick={() => { api.setActive(id); setPeekId(null); setQuery('') }}>
-                        {db.tables[id].icon} {db.tables[id].name}
+                        <Icon value={db.tables[id].icon} size={15} /> {db.tables[id].name}
                     </button>
                 ))}
                     <button onClick={newTable} className="nt-addtab" title="New table in this group">+ New database</button>
@@ -1393,7 +1393,7 @@ function DatabaseBlock({ blockId, canRemove, onRemove }) {
 
             <div className="nt-bar">
                 <div className="nt-titlebar">
-                    <button className="nt-ticon" onClick={openMenu('icon')} aria-label="Change database icon">{table.icon}</button>
+                    <button className="nt-ticon" onClick={openMenu('icon')} aria-label="Change database icon"><Icon value={table.icon} size={26} /></button>
                     <input className="nt-name" value={table.name} onChange={e => api.setTable(table.id, { name: e.target.value })} aria-label="Database name" />
                 </div>
                 <div className="nt-tools">
@@ -1476,12 +1476,12 @@ export function DatabaseView({ db }) {
             <div className="nt-tabs" role="tablist">
                 {db.order.map(id => (
                     <button key={id} role="tab" aria-selected={id === table.id} className={id === table.id ? 'on' : ''} onClick={() => setActive(id)}>
-                        {db.tables[id].icon} {db.tables[id].name}
+                        <Icon value={db.tables[id].icon} size={15} /> {db.tables[id].name}
                     </button>
                 ))}
             </div>
             <div className="nt-bar">
-                <div className="nt-titlebar"><span className="nt-ticon">{table.icon}</span><h2 className="nt-name">{table.name}</h2></div>
+                <div className="nt-titlebar"><span className="nt-ticon"><Icon value={table.icon} size={26} /></span><h2 className="nt-name">{table.name}</h2></div>
             </div>
             <div className="nt-scroll">
                 <table className="nt-table" style={{ width }} ref={lock}>

@@ -1025,4 +1025,14 @@ const CSS = `
 .sgw-type{background:color-mix(in srgb,var(--c) 18%,transparent);color:color-mix(in srgb,var(--c) 65%,var(--tx));border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600}
 @media(max-width:640px){.sg-row{grid-template-columns:26px minmax(0,1fr)}.sg-chips,.sg-meter,.sg-cheers{grid-column:2/-1;text-align:left}}
 .sg-summary{display:flex;gap:8px 18px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-radius:10px;border:1px solid var(--ln);background:color-mix(in srgb,var(--ok) 10%,var(--sf2))}
+.sg>*,.sg-board>*,.sg-plan,.sg-timer>*{min-width:0}
+.sg-who b,.sg-who small,.sg-coach,.sg-plan header b,.sgw-text,.sg-shares b,.sg-shares small,.sg-fulltitle b{overflow-wrap:anywhere}
+.sg-shares li{flex-wrap:wrap}
+.sg-pv{display:flex;gap:14px;align-items:center;margin-bottom:8px}
+.sg-photo{display:flex;gap:14px;align-items:center;margin-bottom:12px}
+.sg-info{list-style:none;margin:8px 0;padding:0;display:grid;gap:4px;overflow-wrap:anywhere}
+.sg-pstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
+.sg-pstats>div{border:1px solid var(--ln);background:var(--sf2);border-radius:10px;padding:8px 10px;display:grid}
+.sg-pstats b{font:700 18px var(--head)}.sg-pstats span{color:var(--mu);font-size:12px}
+@media(max-width:640px){.sg{padding:16px 12px 90px}.sg-board{padding:14px}.sgw-grid{grid-template-columns:1fr}.sgw-col{min-height:0}}
 `

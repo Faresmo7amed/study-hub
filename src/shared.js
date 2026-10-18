@@ -465,6 +465,12 @@ textarea{resize:vertical}
 .toast b{display:block}.toast p{margin:2px 0 8px;color:var(--mu);font-size:14px}
 .confetti{position:fixed;width:7px;height:7px;border-radius:2px;pointer-events:none;z-index:200;animation:burst .85s ease-out forwards}
 .fadein{animation:fade .5s}
+.ic-img{object-fit:contain;border-radius:4px;display:inline-block;vertical-align:middle;flex:none}
+.ic-em{line-height:1;display:inline-block;vertical-align:middle}
+.ic-picker{display:grid;gap:8px}
+.ic-grid{display:flex;flex-wrap:wrap;gap:4px;max-height:190px;overflow:auto}
+.ic-btn{width:34px;height:34px;border:1px solid var(--ln);background:var(--sf2);border-radius:8px;cursor:pointer;font-size:18px;padding:0}
+.ic-btn:hover{border-color:var(--ac)}.ic-btn.on{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 @keyframes rise{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
 @keyframes slide{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
