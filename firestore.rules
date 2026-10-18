@@ -9,7 +9,7 @@ service cloud.firestore {
 
       allow create, update: if request.auth != null
         && request.auth.uid == uid
-        && key in ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap']
+        && key in ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps']
         && request.resource.data.keys().hasOnly(['value', 'updatedAt', 'serverAt'])
         && request.resource.data.value is string
         && request.resource.data.value.size() < 950000

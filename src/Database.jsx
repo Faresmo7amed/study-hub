@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { clamp, uid, useStore } from './shared'
 import { play } from './sound'
@@ -93,6 +93,26 @@ function seedDB() {
                     { id: 't_status', name: 'Processing', type: 'status', width: 150 },
                     { id: 't_done', name: 'Done', type: 'checkbox', width: 90 },
                 ],
+            },
+        },
+    }
+}
+
+/* ---------- several groups of tables ---------- */
+const seedStore = () => ({ blocks: [{ id: 'main', ...seedDB() }] })
+
+// Old saved data was a single group: wrap it as the first block
+const normalizeStore = v => (v && Array.isArray(v.blocks) ? v : { blocks: [{ id: 'main', ...v }] })
+
+const blankBlock = name => {
+    const id = uid()
+    const tid = uid()
+    return {
+        id, order: [tid], active: tid,
+        tables: {
+            [tid]: {
+                id: tid, name, icon: '📋', sort: null, filters: [], calc: {}, rows: [],
+                props: [{ id: uid(), name: 'Name', type: 'title', width: 280 }, { id: uid(), name: 'Status', type: 'status', width: 150 }],
             },
         },
     }
@@ -1300,8 +1320,20 @@ function Peek({ db, table, row, api, onClose }) {
 /* ============================================================
    The database block
    ============================================================ */
-export default function Database() {
-    const [db, , update] = useStore('database', seedDB)
+function DatabaseBlock({ blockId, canRemove, onRemove }) {
+    const [raw, , updateRaw] = useStore('database', seedStore)
+    const [armedBlock, setArmedBlock] = useState(false)
+    const store = useMemo(() => normalizeStore(raw), [raw])
+    const db = store.blocks.find(b => b.id === blockId) || store.blocks[0]
+    // Every edit in this component works on this block only
+    const update = useCallback(fn => updateRaw(d => {
+        const s = normalizeStore(d)
+        const b = s.blocks.find(x => x.id === blockId)
+        if (!b) return s
+        const out = fn(b)
+        if (out !== undefined) s.blocks = s.blocks.map(x => (x === b ? { ...out, id: blockId } : x))
+        return s
+    }), [updateRaw, blockId])
     const [query, setQuery] = useState('')
     const [peekId, setPeekId] = useState(null)
     const [menu, setMenu] = useState(null)
@@ -1333,7 +1365,12 @@ export default function Database() {
                         {db.tables[id].icon} {db.tables[id].name}
                     </button>
                 ))}
-                <button onClick={newTable} className="nt-addtab" title="New database">+ New database</button>
+                    <button onClick={newTable} className="nt-addtab" title="New table in this group">+ New database</button>
+                {canRemove && (
+                    <button onClick={() => { if (armedBlock) onRemove(); else setArmedBlock(true) }} title="Remove this whole group" style={{ color: 'var(--bad)' }}>
+                        {armedBlock ? 'Click again to remove group' : 'Remove group'}
+                    </button>
+                )}
             </div>
 
             <div className="nt-bar">
@@ -1399,6 +1436,43 @@ export default function Database() {
             {menu && menu.kind === 'addprop' && <AddPropMenu anchor={menu.anchor} onClose={closeMenu} db={db} table={table} api={api} />}
             {menu && menu.kind === 'row' && menuRow && <RowMenu anchor={menu.anchor} onClose={closeMenu} table={table} row={menuRow} api={api} />}
         </section>
+    )
+}
+
+/* ============================================================
+   All groups, stacked
+   ============================================================ */
+export default function Databases() {
+    const [raw, , updateRaw] = useStore('database', seedStore)
+    const store = useMemo(() => normalizeStore(raw), [raw])
+
+    const addBlock = () => {
+        const name = window.prompt('Name of the first table in the new group', 'Reading list')
+        if (!name || !name.trim()) return
+        play('save')
+        updateRaw(d => {
+            const s = normalizeStore(d)
+            s.blocks.push(blankBlock(name.trim()))
+            return s
+        })
+    }
+    const removeBlock = id => {
+        play('delete')
+        updateRaw(d => {
+            const s = normalizeStore(d)
+            if (s.blocks.length > 1) s.blocks = s.blocks.filter(b => b.id !== id)
+            return s
+        })
+    }
+
+    return (
+        <div className="nt-blocks">
+            <style>{'.nt-blocks{display:grid;gap:20px}'}</style>
+            {store.blocks.map(b => (
+                <DatabaseBlock key={b.id} blockId={b.id} canRemove={store.blocks.length > 1} onRemove={() => removeBlock(b.id)} />
+            ))}
+            <div><button className="btn" onClick={addBlock}>+ New database group</button></div>
+        </div>
     )
 }
 

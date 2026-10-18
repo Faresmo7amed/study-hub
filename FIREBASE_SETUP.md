@@ -45,3 +45,6 @@ Copy `firestore.rules` and `.env.example` to the root of the project (next to `p
 - The Firebase config values in the browser are not secrets. The security rules protect the data.
 - As the project owner you can read everyone's data in the console. Tell your friends.
 - Watch usage under **Firestore Database → Usage**.
+
+## If you already published the rules earlier
+The multiple-roadmaps update added one new synced key, `roadmaps`. Open **Firestore Database → Rules**, replace the text with the current `firestore.rules`, and click **Publish** again. Until you do, saving roadmaps to the cloud is refused with "permission denied".

@@ -25,7 +25,8 @@ const fromHash = () => {
 function TopBar({ page, go, onBackup, onAccount, onSound }) {
     const stats = useStats()
     const [meta] = useStore('meta', {})
-    const stale = !meta.lastBackup || Date.now() - meta.lastBackup > 7 * 86400000
+    const now = useNow(60000)
+    const stale = !meta.lastBackup || now.getTime() - meta.lastBackup > 7 * 86400000
     const [theme, setTheme] = useStore('theme', 'system')
     const [perm, setPerm] = useState(() => ('Notification' in window ? Notification.permission : 'denied'))
 
@@ -45,7 +46,7 @@ function TopBar({ page, go, onBackup, onAccount, onSound }) {
             const result = await Notification.requestPermission()
             setPerm(result)
             if (result === 'granted') notify({ title: 'Alerts enabled', body: 'Event reminders will also appear as system notifications.', icon: '✅' })
-        } catch {}
+        } catch {return null}
     }
 
     return (
@@ -245,7 +246,7 @@ function BackupModal({ onClose }) {
     const d = pending ? pending.obj.data : {}
     const todos = Object.values(d.todos || {}).reduce((n, week) => n + week.reduce((m, day) => m + day.length, 0), 0)
     const rows = pending ? [
-        ['Todos', todos], ['Events', (d.events || []).length], ['Database tables', d.database ? d.database.order.length : 0],
+        ['Todos', todos], ['Events', (d.events || []).length], ['Database tables', d.database ? (d.database.blocks ? d.database.blocks.reduce((n, b) => n + b.order.length, 0) : d.database.order.length) : 0],
         ['Notes', (d.notes || []).length], ['Roadmap topics', d.roadmap ? d.roadmap.topics.length : 0],
     ] : []
 
