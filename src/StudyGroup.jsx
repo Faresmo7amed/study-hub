@@ -590,8 +590,9 @@ export default function StudyGroup() {
     // One row per member, with the running session counted in
     const rows = useMemo(() => {
     const t = now.getTime()
+    const today = iso(now)
     const ws = iso(weekStart(now))
-        return members.map(m => {
+    return members.map(m => {
             const on = Boolean(m.studying) && t - m.studying < ONLINE_MAX
             const live = on ? Math.min(MAX_SESSION, Math.floor((t - m.studying) / 60000)) : 0
             const base = m.days || {}

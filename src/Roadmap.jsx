@@ -938,8 +938,7 @@ export default function Roadmap() {
                 </div>
                 <div className="rm-pg">
                     <div className="rm-track"><i style={{ width: pct + '%' }} /></div>
-                    <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}</span>
-                    {hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}
+                    <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}{hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}</span>
                 </div>
             </div>
 
@@ -955,7 +954,7 @@ export default function Roadmap() {
                                 {t.gate && <Gate t={t} onToggle={toggleGate} />}
                             </div>
                             <div className="rm-subs">
-                                {t.subs.map(s => <Node key={s.id} t={s} maps={maps} dim={!vis(s)} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />)}
+                                {t.subs.map(s => <Node key={s.id} t={s} maps={maps} dim={!vis(s)} onMoveTo={api.reorder} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />)}
                                 <button className="rm-addsub" onClick={() => addSub(t)}>+ Subtopic</button>
                             </div>
                         </div>
@@ -1068,8 +1067,7 @@ export function RoadmapView({ data }) {
                 </div>
                 <div className="rm-pg">
                     <div className="rm-track"><i style={{ width: pct + '%' }} /></div>
-                    <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}</span>
-                    {hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}
+                    <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}{hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}</span>
                 </div>
             </div>
             <div className="rm-map" ref={mapRef}>
