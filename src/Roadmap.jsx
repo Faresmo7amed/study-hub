@@ -9,12 +9,12 @@ import { play } from './sound'
    - click any square to open its study notes, checklist, resources and projects
    ============================================================ */
 
-const PR = { must: 'Mandatory', rec: 'Recommended', nice: 'Nice to have', opt: 'Optional' }
+const PR = { must: 'Mandatory', rec: 'Recommended', nice: 'Nice to have', opt: 'Optional', adv: 'Advanced' }
 const STATUS = { todo: 'Not started', doing: 'In progress', done: 'Done' }
 const RES_TYPES = ['Docs', 'Video', 'Article', 'Course', 'Book']
 const RES_TO_TODO = { Docs: 'article', Video: 'video', Article: 'article', Course: 'course', Book: 'book' }
 // Each priority has its own colour (you can change them with the Colours button)
-const DEFAULT_COLORS = { must: '#7c6cff', rec: '#3b9dff', nice: '#f5a524', opt: '#2fbfa8' }
+const DEFAULT_COLORS = { must: '#7c6cff', rec: '#3b9dff', nice: '#f5a524', opt: '#2fbfa8', adv: '#e255a1' }
 
 /* ---------- data ---------- */
 const norm = (t, top = true) => {
@@ -27,6 +27,7 @@ const norm = (t, top = true) => {
     if (!PR[o.priority]) o.priority = 'rec'
     if (!STATUS[o.status]) o.status = 'todo'
     if (typeof o.ref !== 'string' || !o.ref) o.ref = null // id of another roadmap this item points to
+    o.est = Math.max(0, Number(t.est) || 0)
     return o
 }
 
@@ -111,7 +112,11 @@ const locate = (d, id) => {
     return null
 }
 const itemsOf = m => m.topics.flatMap(t => [t, ...t.subs])
-
+const hoursLeft = (topics, st) => topics.reduce((n, t) => {
+    const subs = t.subs.filter(s => s.est > 0)
+    if (subs.length) return n + subs.reduce((k, s) => k + (st(s) === 'done' ? 0 : s.est), 0)
+    return n + (st(t) === 'done' ? 0 : t.est || 0)
+}, 0)
 /*
   Linked roadmaps: an item with a "ref" is done when every topic and subtopic of that roadmap is done.
   "chain" lists the roadmaps we are already inside, so a loop (A -> B -> A) can never run forever.
@@ -159,7 +164,7 @@ export function snapshotRoadmap(store, id) {
     const maps = store.maps
     const m = maps[id]
     const item = (t, top) => ({
-        id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40),
+        id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40), est: t.est || 0,
         priority: t.priority, status: effStatus(t, maps), pct: prog(t, maps), ref: null,
         subs: top ? t.subs.map(s => item(s, false)) : [],
         gate: top && t.gate ? { name: t.gate.name, desc: t.gate.desc, highlight: t.gate.highlight, done: t.gate.done } : null,
@@ -183,18 +188,20 @@ const svgEl = (tag, attrs) => {
 }
 
 /* ---------- map pieces ---------- */
-function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly }) {
+function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }) {
     const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
     const status = effStatus(t, maps)
     return (
-        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${linked ? ' linked' : ''}`}>
+        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${linked ? ' linked' : ''}`} onDragOver={e => { if (onMoveTo) e.preventDefault() }}
+onDrop={e => { if (!onMoveTo) return; e.preventDefault(); onMoveTo(e.dataTransfer.getData('text/plain'), t.id) }}>
+            {onMoveTo && <span className="rm-drag" draggable onDragStart={e => e.dataTransfer.setData('text/plain', t.id)} title="Drag to reorder" aria-hidden="true">⠿</span>}
             <button className="rm-chk" disabled={!!linked || readOnly}
                 title={linked ? 'Done automatically when the linked roadmap is finished' : status === 'done' ? 'Mark as not done' : 'Mark as done'}
                 aria-label={`Toggle ${t.title || 'item'} done`} aria-pressed={status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
             {linked && <button className="rm-go" onClick={() => onGoRef(linked.id)} title={`Open the ${linked.title} roadmap`} aria-label={`Open the ${linked.title} roadmap`}>↗</button>}
             <button className="rm-body" onClick={() => onOpen(t.id)}>
                 <b>{n ? n + '. ' : ''}{t.title || 'Untitled'}</b>
-                {n && t.when && <em>{t.when}</em>}
+                {n && (t.when || t.est > 0) && <em>{[t.when, t.est > 0 && `${t.est} h`].filter(Boolean).join(' · ')}</em>}
                 {n && t.desc && <small>{t.desc}</small>}
                 {linked && <span className="rm-ref">↗ {linked.title}</span>}
                 <span className="rm-pr">{PR[t.priority]}</span>
@@ -204,7 +211,7 @@ function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly }) {
     )
 }
 
-function Gate({ t, onToggle, readOnly }) {
+function Gate({ t, onToggle }) {
     const g = t.gate
     return (
         <div className="rm-gate">
@@ -249,10 +256,9 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
     })
 
     if (!hit) return <aside className="rm-drawer" aria-hidden="true" />
-    const { t, p, arr } = hit
+    const { t, p} = hit
     const close = () => setSel(null)
 
-    const text = (obj, key, ph, extra) => <input type="text" value={obj[key] || ''} placeholder={ph} aria-label={ph} onChange={e => api.patchItem(t.id, key, obj, e.target.value)} {...extra} />
     const topText = (key, ph, extra) => <input type="text" value={t[key] || ''} placeholder={ph} aria-label={ph} onChange={e => api.patch(t.id, { [key]: e.target.value })} {...extra} />
     const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
     const seg = (label, opts, key, disabled) => (
@@ -290,6 +296,9 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                 <div className="grow">{topText('desc', 'Short description')}</div>
                 <div style={{ width: 140 }}>{topText('when', 'Timeframe')}</div>
             </div>
+            <label className="field" style={{ marginTop: 8 }}><span>Estimate (hours)</span>
+                <input type="number" min="0" step="0.5" value={t.est || ''} onChange={e => api.patch(t.id, { est: Math.max(0, Number(e.target.value) || 0) })} />
+            </label>
             <div>
                 <div className="rm-lb">Linked roadmap</div>
                 <select value={t.ref || ''} aria-label="Linked roadmap" onChange={e => api.setRef(t.id, e.target.value || null)}>
@@ -299,6 +308,7 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                         return <option key={id} value={id} disabled={loops}>{maps[id].title || 'Untitled roadmap'}{loops ? ' (would loop back here)' : ''}</option>
                     })}
                 </select>
+                {!t.ref && <button className="btn sm" style={{ marginTop: 8 }} onClick={() => api.makeRoadmap(t.id)}>Create its own roadmap</button>}
                 {linked && (() => {
                     const p = mapProgress(linked, maps)
                     return (
@@ -509,6 +519,7 @@ function NewRoadmapModal({ currentTitle, onCreate, onClose }) {
                     </div>
                 </div>
                 <div className="row"><span className="grow" /><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="submit" className="btn primary">Create roadmap</button></div>
+            
             </form>
         </div>
     )
@@ -601,6 +612,23 @@ export default function Roadmap() {
             })
             play('tick')
         },
+        makeRoadmap: id => {
+            const h = locate(data, id)
+            if (!h) return
+            const newId = uid()
+            const seed = h.t.subs.map(s => ({ ...JSON.parse(JSON.stringify(s)), subs: [] }))
+            reid(seed)
+            updateStore(d => {
+                d.maps[newId] = normMap({ id: newId, title: h.t.title || 'New roadmap', topics: seed })
+                d.order.push(newId)
+                const x = d.maps[activeId] && locate(d.maps[activeId], id)
+                if (x) x.t.ref = newId
+                d.active = newId
+            })
+            setTrail(tr => [...tr, activeId])
+            setSel(null)
+            play('save')
+        },
         addIn: (id, key, item) => {
             update(d => {
                 const h = locate(d, id)
@@ -643,6 +671,18 @@ export default function Roadmap() {
                 if (h) h.arr.splice(h.arr.indexOf(h.t), 1)
             })
             play('delete')
+        },
+        reorder: (fromId, toId) => {
+            if (!fromId || fromId === toId) return
+            update(d => {
+                const a = locate(d, fromId)
+                const b = locate(d, toId)
+                if (!a || !b || a.arr !== b.arr) return
+                const i = a.arr.indexOf(a.t)
+                const j = a.arr.indexOf(b.t)
+                a.arr.splice(j, 0, a.arr.splice(i, 1)[0])
+            })
+            play('move')
         },
     }
 
@@ -774,54 +814,56 @@ export default function Roadmap() {
     }, [store]) // eslint-disable-line react-hooks/exhaustive-deps
 
     /* ----- connector lines: drawn from the real position of every square ----- */
-    drawRef.current = () => {
-        const map = mapRef.current
-        const svg = mainSvg.current
-        const ls = subSvg.current
-        if (!map || !svg || !ls) return
-        const m = map.getBoundingClientRect()
-        const cells = [...map.querySelectorAll('.rm-cell')]
-        const mobile = window.innerWidth < 700
-        const want = Math.max(0, cells.length - 1)
-        if (svg.children.length !== want * 2) {
-            svg.replaceChildren()
-            for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
-        }
-        cells.slice(0, -1).forEach((cell, i) => {
-            const A = cell.getBoundingClientRect()
-            const R = cell.parentNode.getBoundingClientRect()
-            const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
-            const x1 = A.left + A.width / 2 - m.left
-            const y0 = (mobile ? R.bottom : A.bottom) - m.top
-            const y1 = R.bottom - m.top
-            const x2 = B.left + B.width / 2 - m.left
-            const y2 = B.top - m.top
-            const d = Math.max(30, (y2 - y1) * 0.6)
-            const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
-            const t = data.topics[i]
-            svg.children[2 * i].setAttribute('d', D)
-            svg.children[2 * i + 1].setAttribute('d', D)
-            svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
-        })
-        ls.replaceChildren()
-        if (hideSubs || mobile) return
-        data.topics.forEach(t => {
-            const row = document.getElementById('rm-r-' + t.id)
-            if (!row) return
-            const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
-            const toRight = row.classList.contains('l')
-            t.subs.forEach(s => {
-                const el = document.getElementById('rm-n-' + s.id)
-                if (!el) return
-                const e = el.getBoundingClientRect()
-                const xs = (toRight ? box.right : box.left) - m.left
-                const xe = (toRight ? e.left : e.right) - m.left
-                const ys = box.top + box.height / 2 - m.top
-                const ye = e.top + e.height / 2 - m.top
-                ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
+    useLayoutEffect(() => {
+        drawRef.current = () => {
+            const map = mapRef.current
+            const svg = mainSvg.current
+            const ls = subSvg.current
+            if (!map || !svg || !ls) return
+            const m = map.getBoundingClientRect()
+            const cells = [...map.querySelectorAll('.rm-cell')]
+            const mobile = window.innerWidth < 700
+            const want = Math.max(0, cells.length - 1)
+            if (svg.children.length !== want * 2) {
+                svg.replaceChildren()
+                for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
+            }
+            cells.slice(0, -1).forEach((cell, i) => {
+                const A = cell.getBoundingClientRect()
+                const R = cell.parentNode.getBoundingClientRect()
+                const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
+                const x1 = A.left + A.width / 2 - m.left
+                const y0 = (mobile ? R.bottom : A.bottom) - m.top
+                const y1 = R.bottom - m.top
+                const x2 = B.left + B.width / 2 - m.left
+                const y2 = B.top - m.top
+                const d = Math.max(30, (y2 - y1) * 0.6)
+                const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
+                const t = data.topics[i]
+                svg.children[2 * i].setAttribute('d', D)
+                svg.children[2 * i + 1].setAttribute('d', D)
+                svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
             })
-        })
-    }
+            ls.replaceChildren()
+            if (hideSubs || mobile) return
+            data.topics.forEach(t => {
+                const row = document.getElementById('rm-r-' + t.id)
+                if (!row) return
+                const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
+                const toRight = row.classList.contains('l')
+                t.subs.forEach(s => {
+                    const el = document.getElementById('rm-n-' + s.id)
+                    if (!el) return
+                    const e = el.getBoundingClientRect()
+                    const xs = (toRight ? box.right : box.left) - m.left
+                    const xe = (toRight ? e.left : e.right) - m.left
+                    const ys = box.top + box.height / 2 - m.top
+                    const ye = e.top + e.height / 2 - m.top
+                    ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
+                })
+            })
+        }
+    } )
     useLayoutEffect(() => { drawRef.current() })
     useEffect(() => {
         const redraw = () => drawRef.current()
@@ -847,7 +889,7 @@ export default function Roadmap() {
     const lastFrom = trail.length ? maps[trail[trail.length - 1]] : null
 
     return (
-        <div className="rm" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt }}>
+        <div className="rm" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt, '--c-adv': colors.adv }}>
             <style>{CSS}</style>
 
             <div className="rm-tabs" role="tablist" aria-label="Roadmaps">
@@ -897,6 +939,7 @@ export default function Roadmap() {
                 <div className="rm-pg">
                     <div className="rm-track"><i style={{ width: pct + '%' }} /></div>
                     <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}</span>
+                    {hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}
                 </div>
             </div>
 
@@ -908,7 +951,7 @@ export default function Roadmap() {
                     {data.topics.map((t, i) => (
                         <div key={t.id} id={'rm-r-' + t.id} className={'rm-row ' + (i % 2 ? 'r' : 'l')}>
                             <div className="rm-cell">
-                                <Node t={t} n={i + 1} maps={maps} dim={!(vis(t) || t.subs.some(vis))} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />
+                                <Node t={t} n={i + 1} maps={maps} dim={!(vis(t) || t.subs.some(vis))} onMoveTo={api.reorder} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />
                                 {t.gate && <Gate t={t} onToggle={toggleGate} />}
                             </div>
                             <div className="rm-subs">
@@ -951,54 +994,56 @@ export function RoadmapView({ data }) {
     const must = all.filter(t => t.priority === 'must')
     const pct = all.length ? Math.round((100 * doneCount) / all.length) : 0
 
-    drawRef.current = () => {
-        const map = mapRef.current
-        const svg = mainSvg.current
-        const ls = subSvg.current
-        if (!map || !svg || !ls) return
-        const m = map.getBoundingClientRect()
-        const cells = [...map.querySelectorAll('.rm-cell')]
-        const mobile = window.innerWidth < 700
-        const want = Math.max(0, cells.length - 1)
-        if (svg.children.length !== want * 2) {
-            svg.replaceChildren()
-            for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
-        }
-        cells.slice(0, -1).forEach((cell, i) => {
-            const A = cell.getBoundingClientRect()
-            const R = cell.parentNode.getBoundingClientRect()
-            const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
-            const x1 = A.left + A.width / 2 - m.left
-            const y0 = (mobile ? R.bottom : A.bottom) - m.top
-            const y1 = R.bottom - m.top
-            const x2 = B.left + B.width / 2 - m.left
-            const y2 = B.top - m.top
-            const d = Math.max(30, (y2 - y1) * 0.6)
-            const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
-            const t = data.topics[i]
-            svg.children[2 * i].setAttribute('d', D)
-            svg.children[2 * i + 1].setAttribute('d', D)
-            svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
-        })
-        ls.replaceChildren()
-        if (mobile) return
-        data.topics.forEach(t => {
-            const row = document.getElementById('rm-r-' + t.id)
-            if (!row) return
-            const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
-            const toRight = row.classList.contains('l')
-            t.subs.forEach(s => {
-                const el = document.getElementById('rm-n-' + s.id)
-                if (!el) return
-                const e = el.getBoundingClientRect()
-                const xs = (toRight ? box.right : box.left) - m.left
-                const xe = (toRight ? e.left : e.right) - m.left
-                const ys = box.top + box.height / 2 - m.top
-                const ye = e.top + e.height / 2 - m.top
-                ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
+    useLayoutEffect(() => {
+        drawRef.current = () => {
+            const map = mapRef.current
+            const svg = mainSvg.current
+            const ls = subSvg.current
+            if (!map || !svg || !ls) return
+            const m = map.getBoundingClientRect()
+            const cells = [...map.querySelectorAll('.rm-cell')]
+            const mobile = window.innerWidth < 700
+            const want = Math.max(0, cells.length - 1)
+            if (svg.children.length !== want * 2) {
+                svg.replaceChildren()
+                for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
+            }
+            cells.slice(0, -1).forEach((cell, i) => {
+                const A = cell.getBoundingClientRect()
+                const R = cell.parentNode.getBoundingClientRect()
+                const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
+                const x1 = A.left + A.width / 2 - m.left
+                const y0 = (mobile ? R.bottom : A.bottom) - m.top
+                const y1 = R.bottom - m.top
+                const x2 = B.left + B.width / 2 - m.left
+                const y2 = B.top - m.top
+                const d = Math.max(30, (y2 - y1) * 0.6)
+                const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
+                const t = data.topics[i]
+                svg.children[2 * i].setAttribute('d', D)
+                svg.children[2 * i + 1].setAttribute('d', D)
+                svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
             })
-        })
-    }
+            ls.replaceChildren()
+            if (mobile) return
+            data.topics.forEach(t => {
+                const row = document.getElementById('rm-r-' + t.id)
+                if (!row) return
+                const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
+                const toRight = row.classList.contains('l')
+                t.subs.forEach(s => {
+                    const el = document.getElementById('rm-n-' + s.id)
+                    if (!el) return
+                    const e = el.getBoundingClientRect()
+                    const xs = (toRight ? box.right : box.left) - m.left
+                    const xe = (toRight ? e.left : e.right) - m.left
+                    const ys = box.top + box.height / 2 - m.top
+                    const ye = e.top + e.height / 2 - m.top
+                    ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
+                })
+            })
+        }
+    })
     useLayoutEffect(() => { drawRef.current() })
     useEffect(() => {
         const redraw = () => drawRef.current()
@@ -1013,7 +1058,7 @@ export function RoadmapView({ data }) {
     }, [])
 
     return (
-        <div className="rm rm-view" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt }}>
+        <div className="rm rm-view" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt, '--c-adv': colors.adv }}>
             <style>{CSS}</style>
             <div className="rm-head">
                 <h2 className="rm-vtitle">{data.title}</h2>
@@ -1024,6 +1069,7 @@ export function RoadmapView({ data }) {
                 <div className="rm-pg">
                     <div className="rm-track"><i style={{ width: pct + '%' }} /></div>
                     <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}</span>
+                    {hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}
                 </div>
             </div>
             <div className="rm-map" ref={mapRef}>
@@ -1034,7 +1080,7 @@ export function RoadmapView({ data }) {
                         <div key={t.id} id={'rm-r-' + t.id} className={'rm-row ' + (i % 2 ? 'r' : 'l')}>
                             <div className="rm-cell">
                                 <Node t={t} n={i + 1} maps={maps} dim={false} onOpen={noop} onToggle={noop} onGoRef={noop} readOnly />
-                                {t.gate && <Gate t={t} onToggle={noop} readOnly />}
+                                {t.gate && <Gate t={t} onToggle={noop} />}
                             </div>
                             <div className="rm-subs">
                                 {t.subs.map(s => <Node key={s.id} t={s} maps={maps} dim={false} onOpen={noop} onToggle={noop} onGoRef={noop} readOnly />)}
@@ -1125,4 +1171,6 @@ const CSS = `
 .rm-vtitle{font:700 26px var(--head);flex:1 1 280px;margin:0}
 .rm-view .rm-chk:disabled{opacity:1;cursor:default}
 .rm-view .rm-body,.rm-view .rm-dm,.rm-view .rm-ch{cursor:default}
+.p-must,.p-rec,.p-nice,.p-opt,.p-adv{border-color:var(--pc);background:color-mix(in srgb,var(--pc) 14%,var(--sf))}
+.p-adv{--pc:var(--c-adv);border-width:3px;border-style:double}
 `

@@ -95,7 +95,7 @@ service cloud.firestore {
           && request.resource.data.from == request.auth.uid
           && request.resource.data.to is string
           && cheerId == request.auth.uid + '_' + request.resource.data.to
-          && request.resource.data.kind in ['clap', 'fire', 'muscle']
+          && request.resource.data.kind in ['clap', 'fire', 'muscle', 'nudge']
           && request.resource.data.n is number
           && request.resource.data.at is number;
         allow delete: if request.auth != null && resource.data.from == request.auth.uid;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { addDays, dayIndex, getStore, hms, iso, notify, onStoreChange, parseISO, setStore, todayISO, useNow, useStore, weekStart } from './shared'
+import { DAYS, addDays, computeStats, dayIndex, getStore, hms, iso, notify, onStoreChange, parseISO, setStore, todayISO, useNow, useStats, useStore, weekStart } from './shared'
 import { DatabaseView, loadBlocks, snapshotBlock } from './Database'
 import { RoadmapView, loadRoadmaps, snapshotRoadmap } from './Roadmap'
 import * as fb from './firebase'
@@ -18,11 +18,12 @@ const KEEP_DAYS = 120           // how many days of history go into your card
 const MAX_SESSION = 360         // a forgotten timer never adds more than 6 hours
 const ONLINE_MAX = 12 * 3600000 // "studying now" expires after 12 hours
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-const DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0, profile: {}, celebrated: {} }
+const DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0, profile: {}, celebrated: {}, shared: [] }
 const EMPTY = []
 const PERIODS = { today: 'Today', week: 'This week', total: 'All time' }
 const TITLES = ['👑 Top of the pack', '🥈 Chasing the crown', '🥉 On the podium']
 const CHEERS = { clap: '👏', fire: '🔥', muscle: '💪' }
+const NUDGE = '👉'
 const COOLDOWN = 20000 // ms before you can cheer the same friend again
 // [key, label, hint, max length]
 const PROFILE_FIELDS = [
@@ -103,19 +104,33 @@ function streakOf(days, today) {
 const fail = e => notify({ title: 'Cloud problem', body: (e && e.message) || 'Something went wrong.', icon: '⚠️' })
 
 // Copy my card to the groups (all of them, or only the ids given)
+// Firestore cannot store arrays inside arrays, so each day is a key: { "0": [...], "3": [...] }
+const planOf = week => {
+    const plan = {}
+    ;(week || []).forEach((list, i) => {
+        if (list.length) plan[i] = list.slice(0, 30).map(t => ({ t: String(t.text).slice(0, 80), d: t.done ? 1 : 0 }))
+    })
+    return plan
+}
+
 function publish(user, ids) {
     const s = getStore('studygroup', DEFAULT)
     if (!user || !s.name) return
     const stamp = new Date()
     const cutoff = iso(addDays(stamp, -KEEP_DAYS))
-    const week = getStore('todos', {})[iso(weekStart(stamp))]
-    const planned = week ? week[dayIndex(stamp)] : []
+    const weekKey = iso(weekStart(stamp))
+    const week = getStore('todos', {})[weekKey] || []
+    const planned = week[dayIndex(stamp)] || []
+    const app = computeStats(getStore('todos', {}), getStore('activity', {}), getStore('focus', {}))
     const card = {
         name: s.name,
         days: Object.fromEntries(Object.entries(s.days).filter(([k]) => k >= cutoff)),
         total: s.total,
         studying: getStore('studyrun', {}).start || 0,
-        todos: { done: planned.filter(t => t.done).length, total: planned.length },
+        todos: {
+            done: planned.filter(t => t.done).length, total: planned.length,
+            week: weekKey, plan: planOf(week), streak: app.streak, best: app.best,
+        },
         updatedAt: stamp.getTime(),
         profile: Object.fromEntries(Object.entries(s.profile || {}).filter(([, v]) => v)),
     }
@@ -178,6 +193,33 @@ function shareToGroup(groupId, uid, id, kind, title, data) {
         .catch(fail)
 }
 
+function refreshShares(user) {
+    const list = getStore('studygroup', DEFAULT).shared || []
+    if (!user || !list.length) return
+    const blocks = loadBlocks()
+    const roadmaps = loadRoadmaps()
+    list.forEach(({ g, id }) => {
+        const rest = id.slice(user.uid.length + 1) // "b_main" or "r_fullstack"
+        const ref = rest.slice(2)
+        let kind, title, data
+        if (rest.startsWith('b_')) {
+            const b = blocks.find(x => x.id === ref)
+            if (!b) return
+            kind = 'goals'
+            title = `🗄️ ${b.order.map(t => b.tables[t].name).join(' + ')}`
+            data = snapshotBlock(b)
+        } else {
+            if (!roadmaps.maps[ref]) return
+            kind = 'roadmap'
+            title = `🗺️ ${roadmaps.maps[ref].title || 'Untitled roadmap'}`
+            data = snapshotRoadmap(roadmaps, ref)
+        }
+        const text = JSON.stringify(data)
+        if (text.length > 150000) return
+        fb.saveShare(g, id, { owner: user.uid, kind, title: title.slice(0, 80), data: text, updatedAt: Date.now() }).catch(() => {})
+    })
+}
+
 // What it does: keeps your card fresh while the app is open. It sends your todo counts 20 s after you
 // change a todo, and once a few seconds after the app loads.
 // When to use it: mounted once in App, so it works on every page.
@@ -186,14 +228,21 @@ export function StudyPublisher() {
     const uid = user ? user.uid : ''
     useEffect(() => {
         if (!user) return
-        let timer = setTimeout(() => publish(user), 5000)
+        let cardTimer = setTimeout(() => { publish(user); refreshShares(user) }, 5000)
+        let shareTimer = null
         const off = onStoreChange(key => {
-            if (key !== 'todos') return
-            clearTimeout(timer)
-            timer = setTimeout(() => publish(user), 20000)
+            if (key === 'todos' || key === 'activity') {
+                clearTimeout(cardTimer)
+                cardTimer = setTimeout(() => publish(user), 5000)
+            }
+            if (key === 'roadmaps' || key === 'database') {
+                clearTimeout(shareTimer)
+                shareTimer = setTimeout(() => refreshShares(user), 4000)
+            }
         })
         return () => {
-            clearTimeout(timer)
+            clearTimeout(cardTimer)
+            clearTimeout(shareTimer)
             off()
         }
     }, [uid]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -330,8 +379,9 @@ function ProfileView({ r, isMe, cheerCount, onCheer, onClose }) {
                     <div><b>{fmtMin(r.today)}</b><span> today</span></div>
                     <div><b>{fmtMin(r.week)}</b><span> this week</span></div>
                     <div><b>{fmtMin(r.total)}</b><span> all time</span></div>
-                    <div><b>🔥 {r.streak}</b><span> streak</span></div>
-                    <div><b>{r.best}</b><span> best streak</span></div>
+                    <div><b>📚 {r.streak}</b><span> study streak</span></div>
+                    <div><b>🔥 {r.appStreak}</b><span> todo streak</span></div>
+                    <div><b>{r.best}</b><span> best study streak</span></div>
                     <div><b>💌 {cheerCount}</b><span> cheers</span></div>
                 </div>
                 <div className="row" style={{ marginTop: 14 }}>
@@ -420,11 +470,56 @@ function ShareView({ share, ownerName, onClose }) {
     )
 }
 
+function WeekPlan({ r, isMe, today, ws, onNudge }) {
+    const plan = r.plan
+    const all = plan ? Object.values(plan).flat() : []
+    const done = all.filter(x => x.d).length
+    return (
+        <article className={'sg-plan' + (isMe ? ' me' : '')}>
+            <header>
+                <Avatar name={r.name} photo={r.profile.photo} size={32} />
+                <b>{r.name}{isMe ? ' (you)' : ''}</b>
+                <span className="muted small grow">{all.length ? `${done}/${all.length} done this week` : 'Nothing planned this week'}</span>
+                <span className="sg-chip" title="Todo and focus streak">🔥 {r.appStreak}</span>
+                {!isMe && (plan && plan[today] || []).some(x => !x.d) && <button className="btn sm" onClick={() => onNudge(r.uid)}>{NUDGE} Nudge</button>}
+            </header>
+            {all.length > 0 && <div className="bar"><i className={done === all.length ? 'full' : ''} style={{ width: (100 * done) / all.length + '%' }} /></div>}
+            {plan && DAYS.map((name, i) => {
+                const list = plan[i] || []
+                if (!list.length) return null
+                return (
+                    <div key={i} className={'sg-pday' + (i === today ? ' today' : '')}>
+                        <h4>{name.slice(0, 3)} <small>{addDays(ws, i).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</small></h4>
+                        <ul>{list.map((x, j) => <li key={j} className={x.d ? 'done' : ''}><span aria-hidden="true">{x.d ? '✅' : '⬜'}</span> {x.t}</li>)}</ul>
+                    </div>
+                )
+            })}
+        </article>
+    )
+}
+
+function WeekSummary({ rows, friday }) {
+    const minutes = rows.reduce((n, r) => n + r.week, 0)
+    const all = rows.flatMap(r => (r.plan ? Object.values(r.plan).flat() : []))
+    const done = all.filter(x => x.d).length
+    const top = [...rows].sort((a, b) => b.week - a.week)[0]
+    return (
+        <div className="sg-summary">
+            <b>{friday ? '🏁 Week wrap-up' : '📊 Week so far'}</b>
+            <span>⏱️ {fmtMin(minutes)} studied together</span>
+            <span>✅ {done}/{all.length} todos done</span>
+            {top && top.week > 0 && <span>👑 {top.name} leads with {fmtMin(top.week)}</span>}
+        </div>
+    )
+}
+
 /* ============================================================
    Page
    ============================================================ */
 export default function StudyGroup() {
     const sync = useSyncState()
+    const [todos] = useStore('todos', {})
+    const stats = useStats()
     const user = sync.user
     const uid = user ? user.uid : ''
     const [s, , update] = useStore('studygroup', DEFAULT)
@@ -494,19 +589,25 @@ export default function StudyGroup() {
 
     // One row per member, with the running session counted in
     const rows = useMemo(() => {
-        const t = now.getTime()
-        const today = iso(now)
-        const ws = iso(weekStart(now))
+    const t = now.getTime()
+    const ws = iso(weekStart(now))
         return members.map(m => {
             const on = Boolean(m.studying) && t - m.studying < ONLINE_MAX
             const live = on ? Math.min(MAX_SESSION, Math.floor((t - m.studying) / 60000)) : 0
             const base = m.days || {}
             const days = { ...base, [today]: (base[today] || 0) + live }
             const { streak, best } = streakOf(days, today)
-            const todos = m.todos && iso(new Date(m.updatedAt || 0)) === today ? m.todos : null
-            return { uid: m.uid, name: m.name || '?', on, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live, streak, best, todos, profile: m.profile || {} }
+            const plannedToday = m.todos && iso(new Date(m.updatedAt || 0)) === today ? m.todos : null
+            const tp = m.todos || {}
+            const mine = m.uid === uid
+            return {
+                uid: m.uid, name: m.name || '?', on, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live,
+                streak, best, todos: plannedToday, profile: m.profile || {},
+                plan: mine ? planOf(todos[ws]) : tp.week === ws ? tp.plan || {} : null, // your own plan is always live
+                appStreak: mine ? stats.streak : tp.streak || 0,
+            }
         })
-    }, [members, now])
+    }, [members, now, todos, stats, uid])
 
     const byName = (a, b) => a.name.localeCompare(b.name)
     const order = useMemo(() => [...rows].sort((a, b) => b[period] - a[period] || byName(a, b)), [rows, period])
@@ -527,7 +628,11 @@ export default function StudyGroup() {
         cheers.forEach(c => {
             if (c.to !== uid || c.at === before.at[c.id]) return
             const who = members.find(m => m.uid === c.from)
-            notify({ title: `${who ? who.name : 'A friend'} cheered you ${CHEERS[c.kind] || '👏'}`, body: 'Keep going, they are counting on you!', icon: '💌' })
+            notify({
+                title: c.kind === 'nudge' ? `${who ? who.name : 'A friend'} nudged you ${NUDGE}` : `${who ? who.name : 'A friend'} cheered you ${CHEERS[c.kind] || '👏'}`,
+                body: c.kind === 'nudge' ? 'You still have todos planned today. Open the dashboard!' : 'Keep going, they are counting on you!',
+                icon: '💌',
+            })
             play('cheer')
         })
     }, [cheers]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -611,6 +716,7 @@ export default function StudyGroup() {
         update(d => {
             d.groups = d.groups.filter(g => g.id !== active.id)
             d.active = d.groups[0] ? d.groups[0].id : ''
+            d.shared = (d.shared || []).filter(x => x.g !== active.id)
         })
         play('delete')
     }
@@ -639,8 +745,17 @@ export default function StudyGroup() {
         if (!Number.isFinite(hours) || hours < 0 || hours > 1000) return notify({ title: 'Enter a number of hours', body: 'For example 20.', icon: '🔢' })
         fb.setGroupGoal(activeId, Math.round(hours * 60)).then(() => play('save')).catch(fail)
     }
-    const putShare = (id, kind, title, data) => shareToGroup(activeId, uid, id, kind, title, data)
-    const removeShare = id => fb.deleteShare(activeId, id).then(() => play('delete')).catch(fail)
+    const putShare = (id, kind, title, data) => {
+    shareToGroup(activeId, uid, id, kind, title, data)
+    update(d => {
+        d.shared = d.shared || []
+        if (!d.shared.some(x => x.g === activeId && x.id === id)) d.shared.push({ g: activeId, id })
+    })
+}
+const removeShare = id => {
+    update(d => { d.shared = (d.shared || []).filter(x => !(x.g === activeId && x.id === id)) })
+    return fb.deleteShare(activeId, id).then(() => play('delete')).catch(fail)
+}
 
     /* ----- gates ----- */
     if (sync.phase === 'off') return <Notice title="Cloud sync is not set up" text="The Study Group needs Firebase. Follow FIREBASE_SETUP.md first." />
@@ -649,6 +764,8 @@ export default function StudyGroup() {
 
     /* ----- derived for the screen ----- */
     const today = iso(now)
+    const topMin = Math.max(1, ...order.map(r => r[period]))
+    const weekStartDate = weekStart(now)
     const cheered = {}
     cheers.forEach(c => { if (members.some(m => m.uid === c.from)) cheered[c.to] = (cheered[c.to] || 0) + (c.n || 0) })
     const profileRow = profileId ? rows.find(r => r.uid === profileId) : null
@@ -739,24 +856,38 @@ export default function StudyGroup() {
                             <li key={r.uid} className={'sg-row' + (r.uid === uid ? ' me' : '')}>
                                 <span className="sg-rank">{i + 1}</span>
                                 <button className="sg-who" onClick={() => setProfileId(r.uid)} aria-label={`Open ${r.name}'s profile`}>
-                                    <Avatar name={r.name} photo={r.profile.photo} />
+                                    <Avatar name={r.name} photo={r.profile.photo} size={48} />
                                     <div className="grow">
                                         <b>{r.name}{r.uid === uid ? ' (you)' : ''}</b>
-                                        <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} todos today` : ''}</small>
+                                        <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} today` : ''}</small>
                                     </div>
                                 </button>
-                                {cheered[r.uid] > 0 && <span className="small" title="Cheers received">💌 {cheered[r.uid]}</span>}
+                                <div className="sg-chips">
+                                    <span className="sg-chip" title={`Study streak (${STREAK_MIN}+ min a day). Best: ${r.best}`}>📚 {r.streak}d</span>
+                                    <span className="sg-chip" title="Todo and focus streak">🔥 {r.appStreak}d</span>
+                                    {cheered[r.uid] > 0 && <span className="sg-chip" title="Cheers received">💌 {cheered[r.uid]}</span>}
+                                </div>
+                                <div className="sg-meter">
+                                    <b>{fmtMin(r[period])}</b>
+                                    <div className="bar"><i style={{ width: (100 * r[period]) / topMin + '%' }} /></div>
+                                </div>
                                 {r.uid !== uid && (
                                     <span className="sg-cheers">
                                         {Object.entries(CHEERS).map(([k, e]) => <button key={k} className="icon-btn" title={`Cheer ${r.name}`} aria-label={`Cheer ${r.name} ${e}`} onClick={() => sendCheer(r.uid, k)}>{e}</button>)}
                                     </span>
                                 )}
-                                <span className="sg-streak" title={`Best streak: ${r.best}`}>🔥 {r.streak}</span>
-                                <b className="sg-min">{fmtMin(r[period])}</b>
                             </li>
                         ))}
                     </ol>
                     {!order.length && <p className="muted small">Loading the group…</p>}
+                    <div className="sg-sharehead">
+                        <h3>This week's plans</h3>
+                        <span className="muted small">Saturday to Friday. Friends see your todo text.</span>
+                    </div>
+                    <WeekSummary rows={rows} friday={dayIndex(now) === 6} />
+                    <div className="sg-plans">
+                        {order.map(r => <WeekPlan key={r.uid} r={r} isMe={r.uid === uid} today={dayIndex(now)} ws={weekStartDate} onNudge={uid2 => sendCheer(uid2, 'nudge')} />)}
+                    </div>
                     <div className="sg-sharehead">
                         <h3>Shared with the group</h3>
                         <button className="btn sm" onClick={() => setSharing(true)}>Share goals or a roadmap</button>
@@ -824,4 +955,27 @@ const CSS = `
 .sg-fullbar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--ln)}
 .sg-fulltitle{display:grid;min-width:0}
 .sg-fullbody{max-width:1400px;margin:auto;padding:20px}
+.sg-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(110px,150px) auto;gap:12px;align-items:center;background:var(--sf2);border:1px solid var(--ln);border-radius:10px;padding:12px 14px;transition:border-color .15s}
+.sg-row:hover{border-color:var(--ac)}
+.sg-row.me{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
+.sg-rank{text-align:center;font:700 20px var(--head);color:var(--mu)}
+.sg-list>li:first-child .sg-rank{color:#f5b301}
+.sg-who{all:unset;cursor:pointer;display:flex;gap:12px;align-items:center;min-width:0;border-radius:8px}
+.sg-who:focus-visible{outline:2px solid var(--ac);outline-offset:3px}
+.sg-who .grow{display:grid;min-width:0}
+.sg-chips{display:flex;gap:6px;flex-wrap:wrap}
+.sg-chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--ln);background:var(--sf);border-radius:999px;padding:1px 9px;font-size:13px;font-weight:600;white-space:nowrap}
+.sg-meter{display:grid;gap:4px;text-align:right}.sg-meter b{font-variant-numeric:tabular-nums}
+.sg .bar{height:8px;border-radius:8px;background:var(--ln);overflow:hidden}
+.sg .bar i{display:block;height:100%;border-radius:8px;background:var(--ac);transition:width .5s}.sg .bar i.full{background:var(--ok)}
+.sg-plans{display:grid;gap:12px}
+.sg-plan{border:1px solid var(--ln);border-radius:10px;background:var(--sf2);padding:12px 14px;display:grid;gap:8px}
+.sg-plan.me{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
+.sg-plan header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sg-pday{display:grid;grid-template-columns:78px 1fr;gap:4px 10px;border-top:1px dashed var(--ln);padding-top:6px}
+.sg-pday h4{font:600 13px var(--body);color:var(--mu)}.sg-pday.today h4{color:var(--ac)}
+.sg-pday ul{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.sg-pday li.done{color:var(--mu);text-decoration:line-through}
+@media(max-width:640px){.sg-row{grid-template-columns:26px minmax(0,1fr)}.sg-chips,.sg-meter,.sg-cheers{grid-column:2/-1;text-align:left}}
+.sg-summary{display:flex;gap:8px 18px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-radius:10px;border:1px solid var(--ln);background:color-mix(in srgb,var(--ok) 10%,var(--sf2))}
 `
