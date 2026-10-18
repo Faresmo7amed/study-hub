@@ -127,33 +127,13 @@ export const loadBlocks = () => normalizeStore(getStore('database', seedStore)).
 // What it does: turns one table into a small plain object (titles, progress, linked tasks) that is safe to send to friends.
 // When to use it: when sharing a table. Progress comes from a "percent checked" rollup, else the status or checkbox column.
 // eslint-disable-next-line react-refresh/only-export-components
-export function snapshotTable(block, table) {
-    const titleId = table.props[0].id
-    const pct = table.props.find(p => p.type === 'rollup' && p.config && p.config.fn === 'percent_checked')
-    const status = table.props.find(p => p.type === 'status')
-    const check = table.props.find(p => p.type === 'checkbox')
-    const rel = table.props.find(p => p.type === 'relation' && block.tables[p.config.target])
-    const doneIn = (t, r) => {
-        const c = t.props.find(p => p.type === 'checkbox')
-        const s = t.props.find(p => p.type === 'status')
-        return c ? !!r.cells[c.id] : s ? r.cells[s.id] === 'done' : false
-    }
-    const rows = table.rows.slice(0, 60).map(r => {
-        const item = { n: String(r.cells[titleId] || 'Untitled').slice(0, 80), i: r.icon }
-        if (pct) {
-            const v = plain(block, pct, valueOf(block, table, r, pct))
-            if (typeof v === 'number') item.p = v
-        }
-        if (status) item.s = r.cells[status.id] || 'todo'
-        if (check) item.d = !!r.cells[check.id]
-        if (rel) {
-            const other = block.tables[rel.config.target]
-            item.sub = (r.cells[rel.id] || []).map(id => other.rows.find(x => x.id === id)).filter(Boolean).slice(0, 40)
-                .map(x => ({ n: String(x.cells[other.props[0].id] || 'Untitled').slice(0, 80), d: doneIn(other, x) }))
-        }
-        return item
-    })
-    return { rows }
+// What it does: copies a whole group of tables (Goals, Tasks...) so a friend can open it. Row notes are removed.
+// When to use it: when sharing a group of tables. Relations and rollups need all its tables, so they travel together.
+// eslint-disable-next-line react-refresh/only-export-components
+export function snapshotBlock(block) {
+    const copy = JSON.parse(JSON.stringify(block))
+    Object.values(copy.tables).forEach(t => t.rows.forEach(r => { r.body = '' }))
+    return { v: 2, block: copy }
 }
 
 /* ============================================================
@@ -1477,6 +1457,68 @@ function DatabaseBlock({ blockId, canRemove, onRemove }) {
     )
 }
 
+// Every method of this object does nothing, so the real cells can be drawn without being able to change data
+const READONLY_API = new Proxy({}, { get: () => () => {} })
+const lock = el => { if (el) el.setAttribute('inert', '') } // blocks clicks and keyboard on the table
+
+// What it does: shows a shared group of tables exactly like the Dashboard database, read-only.
+// When to use it: for a snapshot a friend shared. The tabs switch tables; nothing can be edited.
+export function DatabaseView({ db }) {
+    const [active, setActive] = useState(db.active)
+    const table = db.tables[active] || db.tables[db.order[0]]
+    const props = table.props.filter(p => !p.hidden || p.type === 'title')
+    const rows = visibleRows(db, table, '')
+    const width = 34 + props.reduce((sum, p) => sum + (p.width || 180), 0) + 44
+
+    return (
+        <section className="card nt nt-ro" aria-label="Shared databases">
+            <style>{CSS}</style>
+            <div className="nt-tabs" role="tablist">
+                {db.order.map(id => (
+                    <button key={id} role="tab" aria-selected={id === table.id} className={id === table.id ? 'on' : ''} onClick={() => setActive(id)}>
+                        {db.tables[id].icon} {db.tables[id].name}
+                    </button>
+                ))}
+            </div>
+            <div className="nt-bar">
+                <div className="nt-titlebar"><span className="nt-ticon">{table.icon}</span><h2 className="nt-name">{table.name}</h2></div>
+            </div>
+            <div className="nt-scroll">
+                <table className="nt-table" style={{ width }} ref={lock}>
+                    <colgroup>
+                        <col style={{ width: 34 }} />
+                        {props.map(p => <col key={p.id} style={{ width: p.width || 180 }} />)}
+                        <col style={{ width: 44 }} />
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th />
+                            {props.map(p => <Th key={p.id} db={db} table={table} prop={p} api={READONLY_API} />)}
+                            <th />
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows.map(r => (
+                            <tr key={r.id}>
+                                <td className="nt-gut" />
+                                {props.map(p => <td key={p.id}><Cell db={db} table={table} row={r} prop={p} api={READONLY_API} /></td>)}
+                                <td />
+                            </tr>
+                        ))}
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td />
+                            {props.map(p => <CalcCell key={p.id} db={db} table={table} prop={p} rows={rows} api={READONLY_API} />)}
+                            <td />
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </section>
+    )
+}
+
 /* ============================================================
    All groups, stacked
    ============================================================ */
@@ -1587,4 +1629,7 @@ a.nt-rel:hover{border-color:var(--ac)}
 .nt-plabel{display:flex;gap:6px;align-items:center;color:var(--mu);padding-top:9px;font-size:14px}.nt-pval{min-width:0}
 .nt-peek h4{margin:18px 0 6px}
 @media(max-width:640px){.nt-prow{grid-template-columns:1fr}.nt-plabel{padding-top:6px}}
+.nt-ro .nt-table{pointer-events:none}
+.nt-ro .nt-ticon{cursor:default}
+.nt-ro h2.nt-name{margin:0}
 `

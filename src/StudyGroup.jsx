@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { addDays, dayIndex, getStore, hms, iso, notify, onStoreChange, parseISO, setStore, todayISO, useNow, useStore, weekStart } from './shared'
-import { loadBlocks, snapshotTable } from './Database'
-import { loadRoadmaps, snapshotRoadmap } from './Roadmap'
+import { DatabaseView, loadBlocks, snapshotBlock } from './Database'
+import { RoadmapView, loadRoadmaps, snapshotRoadmap } from './Roadmap'
 import * as fb from './firebase'
 import { useSyncState } from './sync'
 import { play } from './sound'
@@ -163,6 +163,19 @@ function cheerFriend(groupId, uid, toUid, kind, count) {
     }
     lastCheer[toUid] = t
     fb.saveCheer(groupId, `${uid}_${toUid}`, { from: uid, to: toUid, kind, n: count + 1, at: t }).then(() => play('cheer')).catch(fail)
+}
+
+// What it does: saves one snapshot in the group, unless it is too big for one cloud document.
+// When to use it: from the Share and Update buttons.
+function shareToGroup(groupId, uid, id, kind, title, data) {
+    const text = JSON.stringify(data)
+    if (text.length > 150000) {
+        notify({ title: 'Too big to share', body: 'Remove some rows or topics and try again.', icon: '📦' })
+        return
+    }
+    fb.saveShare(groupId, id, { owner: uid, kind, title: title.slice(0, 80), data: text, updatedAt: Date.now() })
+        .then(() => play('save'))
+        .catch(fail)
 }
 
 // What it does: keeps your card fresh while the app is open. It sends your todo counts 20 s after you
@@ -330,7 +343,6 @@ function ProfileView({ r, isMe, cheerCount, onCheer, onClose }) {
     )
 }
 
-const STATUS_ICON = { todo: '⚪', doing: '🟡', done: '✅' }
 // What it does: reads a share's JSON text and returns the object, or null when the text is broken.
 // When to use it: when parsing data that came from another user, because it may be invalid.
 const parseShare = text => {
@@ -343,12 +355,11 @@ const parseShare = text => {
 
 /* Parent: StudyGroup opens this. Child: nothing. Lets you pick what to share. */
 function ShareModal({ groupName, uid, mine, onPut, onRemove, onClose }) {
-    const [items] = useState(() => {
+        const [items] = useState(() => {
         const roadmaps = loadRoadmaps()
         return [
-            ...loadBlocks().flatMap(b => b.order.map(tid => {
-                const t = b.tables[tid]
-                return { id: `${uid}_t_${b.id}_${tid}`, kind: 'goals', title: `${t.icon} ${t.name}`, make: () => snapshotTable(b, t) }
+            ...loadBlocks().map(b => ({
+                id: `${uid}_b_${b.id}`, kind: 'goals', title: `🗄️ ${b.order.map(t => b.tables[t].name).join(' + ')}`, make: () => snapshotBlock(b),
             })),
             ...roadmaps.order.filter(id => roadmaps.maps[id]).map(id => ({
                 id: `${uid}_r_${id}`, kind: 'roadmap', title: `🗺️ ${roadmaps.maps[id].title || 'Untitled roadmap'}`, make: () => snapshotRoadmap(roadmaps, id),
@@ -359,11 +370,11 @@ function ShareModal({ groupName, uid, mine, onPut, onRemove, onClose }) {
         <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
             <div className="modal" role="dialog" aria-label="Share with the group">
                 <h2>Share with {groupName}</h2>
-                <p className="muted small" style={{ marginTop: -6 }}>Friends see titles, progress and linked tasks. Notes, resources and everything else stay private. A share is a snapshot: press Update after you make progress.</p>
+                <p className="muted small" style={{ marginTop: -6 }}>Friends open it read-only, looking like your own page. A group of tables is shared with all its cells (but not row notes). A roadmap is shared without notes, resources and checklist text. Press Update after you make progress.</p>
                 <ul className="sg-shares">
                     {items.map(it => (
                         <li key={it.id}>
-                            <div className="grow"><b>{it.title}</b><small className="muted">{it.kind === 'roadmap' ? 'Roadmap' : 'Goals table'}</small></div>
+                            <div className="grow"><b>{it.title}</b><small className="muted">{it.kind === 'roadmap' ? 'Roadmap' : 'Group of tables'}</small></div>
                             {mine.has(it.id) ? (
                                 <>
                                     <button className="btn sm" onClick={() => onPut(it.id, it.kind, it.title, it.make())}>Update</button>
@@ -382,55 +393,28 @@ function ShareModal({ groupName, uid, mine, onPut, onRemove, onClose }) {
 }
 
 /* Parent: StudyGroup. Child: nothing. Shows one friend's shared snapshot. */
+/* Parent: StudyGroup. Child: RoadmapView or DatabaseView. Full-screen, read-only view of a friend's share. */
 function ShareView({ share, ownerName, onClose }) {
     const data = parseShare(share.data)
-    const bar = pct => <div className="bar"><i className={pct >= 100 ? 'full' : ''} style={{ width: Math.min(100, pct) + '%' }} /></div>
+    const ok = Boolean(data) && data.v === 2
+    useEffect(() => {
+        const onKey = e => { if (e.key === 'Escape') onClose() }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+    }, [onClose])
     return (
-        <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
-            <div className="modal sg-view" role="dialog" aria-label={share.title}>
-                <h2>{share.title}</h2>
-                <p className="muted small" style={{ marginTop: -6 }}>Shared by {ownerName} · updated {new Date(share.updatedAt).toLocaleDateString()}</p>
-                {!data && <p>This share could not be read.</p>}
-                {data && share.kind === 'roadmap' && (
-                    <>
-                        <p><b>{data.pct}%</b> of the roadmap is done</p>
-                        {bar(data.pct)}
-                        <ul className="sg-items">
-                            {data.topics.map((t, i) => (
-                                <li key={i}>
-                                    <div className="row"><span>{STATUS_ICON[t.s]}</span><b className="grow">{i + 1}. {t.t}</b><span>{t.pct}%</span></div>
-                                    {bar(t.pct)}
-                                    {t.subs.length > 0 && (
-                                        <details>
-                                            <summary>{t.subs.filter(x => x.s === 'done').length}/{t.subs.length} subtopics</summary>
-                                            <ul>{t.subs.map((x, j) => <li key={j}>{STATUS_ICON[x.s]} {x.t}</li>)}</ul>
-                                        </details>
-                                    )}
-                                </li>
-                            ))}
-                        </ul>
-                    </>
-                )}
-                {data && share.kind === 'goals' && (
-                    <ul className="sg-items">
-                        {data.rows.map((r, i) => (
-                            <li key={i}>
-                                <div className="row">
-                                    <span>{r.i}</span><b className="grow">{r.n}</b>
-                                    <span>{r.p != null ? `${r.p}%` : r.d != null ? (r.d ? '✅' : '⚪') : r.s ? STATUS_ICON[r.s] : ''}</span>
-                                </div>
-                                {r.p != null && bar(r.p)}
-                                {r.sub && r.sub.length > 0 && (
-                                    <details>
-                                        <summary>{r.sub.filter(x => x.d).length}/{r.sub.length} tasks done</summary>
-                                        <ul>{r.sub.map((x, j) => <li key={j}>{x.d ? '✅' : '⚪'} {x.n}</li>)}</ul>
-                                    </details>
-                                )}
-                            </li>
-                        ))}
-                    </ul>
-                )}
-                <div className="row" style={{ marginTop: 14 }}><span className="grow" /><button className="btn" onClick={onClose}>Close</button></div>
+        <div className="sg-full" role="dialog" aria-label={share.title}>
+            <div className="sg-fullbar">
+                <div className="sg-fulltitle">
+                    <b>{share.title}</b>
+                    <span className="muted small">Shared by {ownerName} · updated {new Date(share.updatedAt).toLocaleDateString()} · read only</span>
+                </div>
+                <button className="btn" onClick={onClose}>Close</button>
+            </div>
+            <div className="sg-fullbody">
+                {!ok && <p className="card sg-box">This share was made with an older version. Ask {ownerName} to press Update on it.</p>}
+                {ok && share.kind === 'roadmap' && <RoadmapView data={data.roadmap} />}
+                {ok && share.kind === 'goals' && <DatabaseView db={data.block} />}
             </div>
         </div>
     )
@@ -655,11 +639,7 @@ export default function StudyGroup() {
         if (!Number.isFinite(hours) || hours < 0 || hours > 1000) return notify({ title: 'Enter a number of hours', body: 'For example 20.', icon: '🔢' })
         fb.setGroupGoal(activeId, Math.round(hours * 60)).then(() => play('save')).catch(fail)
     }
-    const putShare = (id, kind, title, data) => {
-        fb.saveShare(activeId, id, { owner: uid, kind, title: title.slice(0, 80), data: JSON.stringify(data), updatedAt: Date.now() })
-            .then(() => play('save'))
-            .catch(fail)
-    }
+    const putShare = (id, kind, title, data) => shareToGroup(activeId, uid, id, kind, title, data)
     const removeShare = id => fb.deleteShare(activeId, id).then(() => play('delete')).catch(fail)
 
     /* ----- gates ----- */
@@ -788,7 +768,8 @@ export default function StudyGroup() {
                             return (
                                 <li key={x.id}>
                                     <div className="grow"><b>{x.title}</b><small className="muted">by {x.owner === uid ? 'you' : who ? who.name : 'a friend'}</small></div>
-                                    <button className="btn sm" onClick={() => setViewing(x.id)}>Open</button>
+                                                                        <button className="btn sm" onClick={() => setViewing(x.id)}>Open</button>
+                                    {x.owner === uid && <button className="btn sm danger" onClick={() => removeShare(x.id)}>Unshare</button>}
                                 </li>
                             )
                         })}
@@ -839,4 +820,8 @@ const CSS = `
 .sg-items{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:12px}
 .sg-items details{margin-top:6px;font-size:14px}
 .sg-items details ul{margin:6px 0 0;padding-left:20px;display:grid;gap:3px}
+.sg-full{position:fixed;inset:0;z-index:60;background:var(--bg);overflow:auto}
+.sg-fullbar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--ln)}
+.sg-fulltitle{display:grid;min-width:0}
+.sg-fullbody{max-width:1400px;margin:auto;padding:20px}
 `

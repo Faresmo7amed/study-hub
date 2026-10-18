@@ -42,6 +42,7 @@ studyhub
 │  ├─ shared.js
 │  ├─ sound.js
 │  ├─ SoundSettings.jsx
+│  ├─ StudyGroup.jsx
 │  └─ sync.js
 └─ vite.config.js
 

@@ -134,6 +134,7 @@ function reaches(maps, from, target, seen = new Set()) {
     return itemsOf(maps[from]).some(i => i.ref && reaches(maps, i.ref, target, seen))
 }
 const prog = (t, maps) => {
+    if (typeof t.pct === 'number') return t.pct // a shared snapshot carries the finished number
     if (t.ref && maps[t.ref]) return mapProgress(maps[t.ref], maps).pct
     const u = [...t.steps, ...t.subs.map(s => ({ done: effStatus(s, maps) === 'done' }))]
     return u.length ? Math.round((100 * u.filter(x => x.done).length) / u.length) : effStatus(t, maps) === 'done' ? 100 : 0
@@ -150,14 +151,21 @@ export const loadRoadmaps = () => getStore('roadmaps', initialStore)
 // What it does: turns one roadmap into plain data for friends (titles, status, priority, progress).
 // Linked roadmaps are already counted in the status and percentages. Notes and resources stay private.
 // eslint-disable-next-line react-refresh/only-export-components
+// What it does: turns one roadmap into plain data for friends. Linked roadmaps are already counted in
+// the status and percentages. Notes, resources, checklist text and projects stay private.
+// When to use it: when sharing a roadmap with a group.
+// eslint-disable-next-line react-refresh/only-export-components
 export function snapshotRoadmap(store, id) {
     const maps = store.maps
     const m = maps[id]
-    const one = t => ({ t: (t.title || 'Untitled').slice(0, 80), s: effStatus(t, maps), p: t.priority })
-    return {
-        pct: mapProgress(m, maps).pct,
-        topics: m.topics.map(t => ({ ...one(t), pct: prog(t, maps), subs: t.subs.map(one) })),
-    }
+    const item = (t, top) => ({
+        id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40),
+        priority: t.priority, status: effStatus(t, maps), pct: prog(t, maps), ref: null,
+        subs: top ? t.subs.map(s => item(s, false)) : [],
+        gate: top && t.gate ? { name: t.gate.name, desc: t.gate.desc, highlight: t.gate.highlight, done: t.gate.done } : null,
+    })
+    const colors = { ...DEFAULT_COLORS, ...(getStore('settings', {}).roadmapColors || {}) }
+    return { v: 2, roadmap: { id: m.id, title: m.title, colors, topics: m.topics.map(t => item(t, true)) } }
 }
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const md = s => esc(s || '')
@@ -175,12 +183,12 @@ const svgEl = (tag, attrs) => {
 }
 
 /* ---------- map pieces ---------- */
-function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef }) {
+function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly }) {
     const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
     const status = effStatus(t, maps)
     return (
         <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${linked ? ' linked' : ''}`}>
-            <button className="rm-chk" disabled={!!linked}
+            <button className="rm-chk" disabled={!!linked || readOnly}
                 title={linked ? 'Done automatically when the linked roadmap is finished' : status === 'done' ? 'Mark as not done' : 'Mark as done'}
                 aria-label={`Toggle ${t.title || 'item'} done`} aria-pressed={status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
             {linked && <button className="rm-go" onClick={() => onGoRef(linked.id)} title={`Open the ${linked.title} roadmap`} aria-label={`Open the ${linked.title} roadmap`}>↗</button>}
@@ -196,7 +204,7 @@ function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef }) {
     )
 }
 
-function Gate({ t, onToggle }) {
+function Gate({ t, onToggle, readOnly }) {
     const g = t.gate
     return (
         <div className="rm-gate">
@@ -925,6 +933,120 @@ export default function Roadmap() {
     )
 }
 
+const noop = () => {}
+
+// What it does: shows a roadmap exactly like the Roadmap page (snake path, subtopics, gates, filling lines), read-only.
+// When to use it: for a roadmap snapshot a friend shared. It needs only the snapshot, not your store.
+export function RoadmapView({ data }) {
+    const maps = { [data.id]: data }
+    const colors = { ...DEFAULT_COLORS, ...(data.colors || {}) }
+    const mapRef = useRef(null)
+    const rowsRef = useRef(null)
+    const mainSvg = useRef(null)
+    const subSvg = useRef(null)
+    const drawRef = useRef(null)
+    const st = t => effStatus(t, maps)
+    const all = itemsOf(data)
+    const doneCount = all.filter(t => st(t) === 'done').length
+    const must = all.filter(t => t.priority === 'must')
+    const pct = all.length ? Math.round((100 * doneCount) / all.length) : 0
+
+    drawRef.current = () => {
+        const map = mapRef.current
+        const svg = mainSvg.current
+        const ls = subSvg.current
+        if (!map || !svg || !ls) return
+        const m = map.getBoundingClientRect()
+        const cells = [...map.querySelectorAll('.rm-cell')]
+        const mobile = window.innerWidth < 700
+        const want = Math.max(0, cells.length - 1)
+        if (svg.children.length !== want * 2) {
+            svg.replaceChildren()
+            for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
+        }
+        cells.slice(0, -1).forEach((cell, i) => {
+            const A = cell.getBoundingClientRect()
+            const R = cell.parentNode.getBoundingClientRect()
+            const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
+            const x1 = A.left + A.width / 2 - m.left
+            const y0 = (mobile ? R.bottom : A.bottom) - m.top
+            const y1 = R.bottom - m.top
+            const x2 = B.left + B.width / 2 - m.left
+            const y2 = B.top - m.top
+            const d = Math.max(30, (y2 - y1) * 0.6)
+            const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
+            const t = data.topics[i]
+            svg.children[2 * i].setAttribute('d', D)
+            svg.children[2 * i + 1].setAttribute('d', D)
+            svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
+        })
+        ls.replaceChildren()
+        if (mobile) return
+        data.topics.forEach(t => {
+            const row = document.getElementById('rm-r-' + t.id)
+            if (!row) return
+            const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
+            const toRight = row.classList.contains('l')
+            t.subs.forEach(s => {
+                const el = document.getElementById('rm-n-' + s.id)
+                if (!el) return
+                const e = el.getBoundingClientRect()
+                const xs = (toRight ? box.right : box.left) - m.left
+                const xe = (toRight ? e.left : e.right) - m.left
+                const ys = box.top + box.height / 2 - m.top
+                const ye = e.top + e.height / 2 - m.top
+                ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
+            })
+        })
+    }
+    useLayoutEffect(() => { drawRef.current() })
+    useEffect(() => {
+        const redraw = () => drawRef.current()
+        const ro = new ResizeObserver(redraw)
+        if (rowsRef.current) ro.observe(rowsRef.current)
+        window.addEventListener('resize', redraw)
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw)
+        return () => {
+            ro.disconnect()
+            window.removeEventListener('resize', redraw)
+        }
+    }, [])
+
+    return (
+        <div className="rm rm-view" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt }}>
+            <style>{CSS}</style>
+            <div className="rm-head">
+                <h2 className="rm-vtitle">{data.title}</h2>
+                <div className="rm-legend">
+                    <span className="muted small">Priority:</span>
+                    {Object.entries(PR).map(([k, v]) => <span key={k} className={`rm-ch p-${k}`}>{v}</span>)}
+                </div>
+                <div className="rm-pg">
+                    <div className="rm-track"><i style={{ width: pct + '%' }} /></div>
+                    <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}</span>
+                </div>
+            </div>
+            <div className="rm-map" ref={mapRef}>
+                <svg className="rm-ov" ref={mainSvg} aria-hidden="true" />
+                <svg className="rm-ov" ref={subSvg} aria-hidden="true" />
+                <div className="rm-rows" ref={rowsRef}>
+                    {data.topics.map((t, i) => (
+                        <div key={t.id} id={'rm-r-' + t.id} className={'rm-row ' + (i % 2 ? 'r' : 'l')}>
+                            <div className="rm-cell">
+                                <Node t={t} n={i + 1} maps={maps} dim={false} onOpen={noop} onToggle={noop} onGoRef={noop} readOnly />
+                                {t.gate && <Gate t={t} onToggle={noop} readOnly />}
+                            </div>
+                            <div className="rm-subs">
+                                {t.subs.map(s => <Node key={s.id} t={s} maps={maps} dim={false} onOpen={noop} onToggle={noop} onGoRef={noop} readOnly />)}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    )
+}
+
 const CSS = `
 .rm{max-width:960px;margin:0 auto;padding:20px 20px 120px}
 .rm-head{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding-bottom:14px;border-bottom:1px solid var(--ln)}
@@ -1000,4 +1122,7 @@ const CSS = `
 .rm-link{color:var(--ac);text-decoration:none;font-weight:600;padding:6px 4px}
 .rm-gform{display:grid;gap:8px;margin-top:8px}
 @media(max-width:700px){.rm-row.l,.rm-row.r{flex-direction:column;gap:14px;padding:0}.rm-row.r{align-items:flex-end}.rm-subs{flex-direction:row;flex-wrap:wrap;padding:0}.rm-row.r .rm-subs{justify-content:flex-end}}
+.rm-vtitle{font:700 26px var(--head);flex:1 1 280px;margin:0}
+.rm-view .rm-chk:disabled{opacity:1;cursor:default}
+.rm-view .rm-body,.rm-view .rm-dm,.rm-view .rm-ch{cursor:default}
 `
