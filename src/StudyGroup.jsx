@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { DAYS, addDays, computeStats, dayIndex, getStore, hms, iso, notify, onStoreChange, parseISO, setStore, todayISO, useNow, useStats, useStore, weekStart } from './shared'
+import { DAYS, TYPES, addDays, computeStats, dayIndex, getStore, hms, iso, notify, onStoreChange, parseISO, setStore, todayISO, useNow, useStats, useStore, weekStart } from './shared'
 import { DatabaseView, loadBlocks, snapshotBlock } from './Database'
 import { RoadmapView, loadRoadmaps, snapshotRoadmap } from './Roadmap'
 import * as fb from './firebase'
@@ -108,7 +108,7 @@ const fail = e => notify({ title: 'Cloud problem', body: (e && e.message) || 'So
 const planOf = week => {
     const plan = {}
     ;(week || []).forEach((list, i) => {
-        if (list.length) plan[i] = list.slice(0, 30).map(t => ({ t: String(t.text).slice(0, 80), d: t.done ? 1 : 0 }))
+        if (list.length) plan[i] = list.slice(0, 30).map(t => ({ t: String(t.text).slice(0, 80), d: t.done ? 1 : 0, y: t.type || 'task' }))
     })
     return plan
 }
@@ -484,16 +484,37 @@ function WeekPlan({ r, isMe, today, ws, onNudge }) {
                 {!isMe && (plan && plan[today] || []).some(x => !x.d) && <button className="btn sm" onClick={() => onNudge(r.uid)}>{NUDGE} Nudge</button>}
             </header>
             {all.length > 0 && <div className="bar"><i className={done === all.length ? 'full' : ''} style={{ width: (100 * done) / all.length + '%' }} /></div>}
-            {plan && DAYS.map((name, i) => {
-                const list = plan[i] || []
-                if (!list.length) return null
-                return (
-                    <div key={i} className={'sg-pday' + (i === today ? ' today' : '')}>
-                        <h4>{name.slice(0, 3)} <small>{addDays(ws, i).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</small></h4>
-                        <ul>{list.map((x, j) => <li key={j} className={x.d ? 'done' : ''}><span aria-hidden="true">{x.d ? '✅' : '⬜'}</span> {x.t}</li>)}</ul>
-                    </div>
-                )
-            })}
+            <div className="sgw-grid">
+                {DAYS.map((name, i) => {
+                    const list = (plan && plan[i]) || []
+                    const dn = list.filter(x => x.d).length
+                    return (
+                        <div key={i} className={'sgw-col' + (i === today ? ' today' : '') + (i < today ? ' past' : '')}>
+                            <div className="sgw-head">
+                                <h4>{name}</h4>
+                                <span className="muted small">{addDays(ws, i).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                                {list.length > 0 && <span className={'sgw-count' + (dn === list.length ? ' all' : '')}>{dn === list.length ? '✓ ' : ''}{dn}/{list.length}</span>}
+                            </div>
+                            {list.length === 0 ? <p className="muted small sgw-empty">Nothing planned.</p> : (
+                                <ul className="sgw-list">
+                                    {list.map((x, j) => {
+                                        const meta = TYPES[x.y] || TYPES.task
+                                        return (
+                                            <li key={j} className={'sgw-td' + (x.d ? ' done' : '')}>
+                                                <input type="checkbox" checked={!!x.d} readOnly disabled aria-label={x.t} />
+                                                <div className="sgw-main">
+                                                    <span className="sgw-text">{x.t}</span>
+                                                    <span className="sgw-type" style={{ '--c': meta.color }}>{meta.icon} {meta.label}</span>
+                                                </div>
+                                            </li>
+                                        )
+                                    })}
+                                </ul>
+                            )}
+                        </div>
+                    )
+                })}
+            </div>
         </article>
     )
 }
@@ -544,6 +565,19 @@ export default function StudyGroup() {
     const shares = shareFeed.id === activeId ? shareFeed.list : EMPTY
 
     // Live cards of the open group
+    
+    // Shares made before auto-sync existed: register them so they stay up to date
+    useEffect(() => {
+        if (!user || shareFeed.id !== activeId) return
+        const known = new Set((s.shared || []).filter(x => x.g === activeId).map(x => x.id))
+        const missing = shareFeed.list.filter(x => x.owner === uid && !known.has(x.id)).map(x => x.id)
+        if (!missing.length) return
+        update(d => {
+            d.shared = d.shared || []
+            missing.forEach(id => d.shared.push({ g: activeId, id }))
+        })
+        refreshShares(user)
+    }, [shareFeed]) // eslint-disable-line react-hooks/exhaustive-deps
     
     // Live list of what the group shared
     useEffect(() => {
@@ -917,7 +951,7 @@ const removeShare = id => {
 }
 
 const CSS = `
-.sg{max-width:900px;margin:auto;padding:24px 20px 90px;display:grid;gap:18px}
+.sg{max-width:1100px;margin:auto;padding:24px 20px 90px;display:grid;gap:18px}
 .sg-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.sg-head h1{font-size:32px}
 .sg-box{padding:20px;display:grid;gap:10px}
 .sg-add form{flex-wrap:nowrap}
@@ -973,10 +1007,22 @@ const CSS = `
 .sg-plan{border:1px solid var(--ln);border-radius:10px;background:var(--sf2);padding:12px 14px;display:grid;gap:8px}
 .sg-plan.me{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
 .sg-plan header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.sg-pday{display:grid;grid-template-columns:78px 1fr;gap:4px 10px;border-top:1px dashed var(--ln);padding-top:6px}
-.sg-pday h4{font:600 13px var(--body);color:var(--mu)}.sg-pday.today h4{color:var(--ac)}
-.sg-pday ul{list-style:none;margin:0;padding:0;display:grid;gap:2px}
-.sg-pday li.done{color:var(--mu);text-decoration:line-through}
+.sgw-grid{display:grid;grid-template-columns:repeat(7,minmax(118px,1fr));gap:8px;overflow-x:auto;padding-bottom:6px}
+.sgw-col{background:var(--sf);border:1px solid var(--ln);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:8px;min-height:120px}
+.sgw-col.today{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
+.sgw-col.past h4{color:var(--mu)}
+.sgw-head{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.sgw-head h4{font-size:14px}
+.sgw-count{margin-left:auto;font-size:12px;font-weight:600;color:var(--mu);background:var(--sf2);border:1px solid var(--ln);border-radius:999px;padding:0 8px}
+.sgw-count.all{color:var(--ok);border-color:var(--ok)}
+.sgw-empty{margin:4px 0;text-align:center}
+.sgw-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.sgw-td{display:flex;gap:8px;align-items:flex-start;background:var(--sf2);border:1px solid var(--ln);border-radius:8px;padding:7px 8px}
+.sgw-td input[type=checkbox]{margin-top:3px;flex:none}
+.sgw-main{flex:1;min-width:0;display:grid;gap:5px;justify-items:start}
+.sgw-text{line-height:1.35;word-break:break-word}
+.sgw-td.done .sgw-text{text-decoration:line-through;color:var(--mu)}
+.sgw-type{background:color-mix(in srgb,var(--c) 18%,transparent);color:color-mix(in srgb,var(--c) 65%,var(--tx));border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600}
 @media(max-width:640px){.sg-row{grid-template-columns:26px minmax(0,1fr)}.sg-chips,.sg-meter,.sg-cheers{grid-column:2/-1;text-align:left}}
 .sg-summary{display:flex;gap:8px 18px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-radius:10px;border:1px solid var(--ln);background:color-mix(in srgb,var(--ok) 10%,var(--sf2))}
 `
