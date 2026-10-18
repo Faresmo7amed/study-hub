@@ -6,7 +6,7 @@ import {
     notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
     useNow, useStats, useStore, weekStart,
 } from './shared'
-import { toggleTodo } from "todoActions.js"
+import { toggleTodo } from "./todoActions.js"
 
 const fmtShort = d => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 

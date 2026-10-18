@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { TYPES, TYPE_KEYS, addTodoToday, dayIndex, iso, parseISO, quoteOfDay, until, useNow, useStats, useStore, weekStart } from './shared'
-import { toggleTodo } from './Dashboard'
+import { toggleTodo } from './todoActions'
 import { loadRoadmaps, nextUp } from './Roadmap'
 import { play } from './sound'
 import { Icon } from './Icons'
