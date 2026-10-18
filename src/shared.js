@@ -41,7 +41,8 @@ export const getStore = (key, initial) => read(key, initial)
   Keys that belong to the user and are synced to the cloud.
   Everything else (theme, backup reminder, fired reminders, the sync bookkeeping itself) stays on the device.
 */
-export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap']
+// 'roadmap' is the old single-roadmap key. It is still synced so that other devices can migrate it to 'roadmaps'.
+export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps']
 
 const changeHooks = new Set()
 export const onStoreChange = fn => {
@@ -75,6 +76,15 @@ export function storedKeys() {
     }
 }
 export const hasLocalData = () => storedKeys().length > 0
+
+// Has this key ever been saved on this device? (example data is not saved until you change something)
+export function isStored(key) {
+    try {
+        return localStorage.getItem(PREFIX + key) !== null
+    } catch {
+        return false
+    }
+}
 
 export function clearLocalData() {
     try {

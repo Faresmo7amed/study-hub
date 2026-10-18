@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { addTodoToday, confetti, notify, uid, useStore } from './shared'
+import { addTodoToday, confetti, getStore, isStored, notify, uid, useStore } from './shared'
 import { play } from './sound'
 
 /* ============================================================
@@ -13,10 +13,12 @@ const PR = { must: 'Mandatory', rec: 'Recommended', nice: 'Nice to have', opt: '
 const STATUS = { todo: 'Not started', doing: 'In progress', done: 'Done' }
 const RES_TYPES = ['Docs', 'Video', 'Article', 'Course', 'Book']
 const RES_TO_TODO = { Docs: 'article', Video: 'video', Article: 'article', Course: 'course', Book: 'book' }
+// Each priority has its own colour (you can change them with the Colours button)
+const DEFAULT_COLORS = { must: '#7c6cff', rec: '#3b9dff', nice: '#f5a524', opt: '#2fbfa8' }
 
 /* ---------- data ---------- */
 const norm = (t, top = true) => {
-    const o = { id: uid(), title: '', desc: '', when: '', status: 'todo', priority: 'rec', notes: '', ...t }
+    const o = { id: uid(), title: '', desc: '', when: '', status: 'todo', priority: 'rec', notes: '', ref: null, ...t }
     o.steps = (t.steps || []).map(x => ({ id: uid(), t: '', done: false, ...x }))
     o.subs = top ? (t.subs || []).map(x => norm(x, false)) : []
     o.res = (t.res || []).map(x => ({ id: uid(), type: 'Docs', t: '', url: '', ...x }))
@@ -24,39 +26,81 @@ const norm = (t, top = true) => {
     o.gate = top && t.gate ? { name: '', desc: '', highlight: false, done: false, ...t.gate } : null
     if (!PR[o.priority]) o.priority = 'rec'
     if (!STATUS[o.status]) o.status = 'todo'
+    if (typeof o.ref !== 'string' || !o.ref) o.ref = null // id of another roadmap this item points to
     return o
 }
 
-const seed = () => ({
-    title: 'Full-stack developer roadmap',
-    topics: [
-        norm({
-            title: 'Foundations', desc: 'HTML, CSS, JavaScript, TypeScript and tooling', when: 'Weeks 1–5', priority: 'must', status: 'doing',
-            notes: '## Goal\nBuild a responsive, accessible page without a framework.\n- Read the MDN guide, then build\n- Write a short note after each topic',
-            steps: [{ t: 'Set up editor, Git and terminal' }, { t: 'Deploy a first page' }],
-            res: [{ type: 'Docs', t: 'MDN Web Docs', url: 'https://developer.mozilla.org' }, { type: 'Course', t: 'JavaScript.info', url: 'https://javascript.info' }],
-            proj: [{ t: 'Responsive portfolio page' }],
-            subs: [{ title: 'HTML and CSS', priority: 'must' }, { title: 'JavaScript', priority: 'must' }, { title: 'TypeScript', priority: 'rec' }, { title: 'Tailwind', priority: 'nice' }],
-        }),
-        norm({
-            title: 'React', desc: 'Components, state, routing, data and testing', when: 'Weeks 6–8', priority: 'must',
-            notes: '## Mental model\nUI is a function of state. Ask what changed, why it rendered, and what runs after.',
-            res: [{ type: 'Docs', t: 'React documentation', url: 'https://react.dev' }],
-            gate: { name: 'Frontend Gate 1', desc: 'Build a feature in 3 h, with tests' },
-            subs: [{ title: 'Router', priority: 'rec' }, { title: 'Data fetching', priority: 'must' }, { title: 'Testing', priority: 'rec' }, { title: 'Animation libraries', priority: 'opt' }],
-        }),
-        norm({
-            title: 'Frontend builds', desc: 'Real projects that combine everything so far', when: 'Weeks 9–16', priority: 'rec',
-            proj: [{ t: 'Ship three projects to production' }],
-            subs: [{ title: 'Storefront', priority: 'must' }, { title: 'Movie browser', priority: 'rec' }, { title: 'Dashboard', priority: 'nice' }],
-        }),
-        norm({
-            title: 'Backend', desc: 'Node, SQL, authentication, tests and Docker', when: 'Weeks 17–30', priority: 'must',
-            gate: { name: 'Backend Gate', desc: '8 h API take-home, then start applying', highlight: true },
-            subs: [{ title: 'Node and SQL', priority: 'must' }, { title: 'Authentication', priority: 'must' }, { title: 'Docker', priority: 'nice' }],
-        }),
-    ],
-})
+const normMap = m => ({ id: m.id || uid(), title: String(m.title == null ? 'Untitled roadmap' : m.title), topics: (m.topics || []).map(t => norm(t)) })
+
+const seedMaps = () => {
+    const fullstack = normMap({
+        id: 'fullstack',
+        title: 'Full-stack developer roadmap',
+        topics: [
+            {
+                title: 'Foundations', desc: 'HTML, CSS, JavaScript, TypeScript and tooling', when: 'Weeks 1–5', priority: 'must', status: 'doing',
+                notes: '## Goal\nBuild a responsive, accessible page without a framework.\n- Read the MDN guide, then build\n- Write a short note after each topic',
+                steps: [{ t: 'Set up editor, Git and terminal' }, { t: 'Deploy a first page' }],
+                res: [{ type: 'Docs', t: 'MDN Web Docs', url: 'https://developer.mozilla.org' }, { type: 'Course', t: 'JavaScript.info', url: 'https://javascript.info' }],
+                proj: [{ t: 'Responsive portfolio page' }],
+                // This subtopic points at the whole JavaScript roadmap: it is done when that roadmap is finished
+                subs: [{ title: 'HTML and CSS', priority: 'must' }, { title: 'JavaScript', priority: 'must', ref: 'javascript', desc: 'Follows the JavaScript roadmap' }, { title: 'TypeScript', priority: 'rec' }, { title: 'Tailwind', priority: 'nice' }],
+            },
+            {
+                title: 'React', desc: 'Components, state, routing, data and testing', when: 'Weeks 6–8', priority: 'must',
+                notes: '## Mental model\nUI is a function of state. Ask what changed, why it rendered, and what runs after.',
+                res: [{ type: 'Docs', t: 'React documentation', url: 'https://react.dev' }],
+                gate: { name: 'Frontend Gate 1', desc: 'Build a feature in 3 h, with tests' },
+                subs: [{ title: 'Router', priority: 'rec' }, { title: 'Data fetching', priority: 'must' }, { title: 'Testing', priority: 'rec' }, { title: 'Animation libraries', priority: 'opt' }],
+            },
+            {
+                title: 'Frontend builds', desc: 'Real projects that combine everything so far', when: 'Weeks 9–16', priority: 'rec',
+                proj: [{ t: 'Ship three projects to production' }],
+                subs: [{ title: 'Storefront', priority: 'must' }, { title: 'Movie browser', priority: 'rec' }, { title: 'Dashboard', priority: 'nice' }],
+            },
+            {
+                title: 'Backend', desc: 'Node, SQL, authentication, tests and Docker', when: 'Weeks 17–30', priority: 'must',
+                gate: { name: 'Backend Gate', desc: '8 h API take-home, then start applying', highlight: true },
+                subs: [{ title: 'Node and SQL', priority: 'must' }, { title: 'Authentication', priority: 'must' }, { title: 'Docker', priority: 'nice' }],
+            },
+        ],
+    })
+    const javascript = normMap({
+        id: 'javascript',
+        title: 'JavaScript',
+        topics: [
+            {
+                title: 'Language basics', desc: 'The core of the language', priority: 'must',
+                res: [{ type: 'Course', t: 'JavaScript.info', url: 'https://javascript.info' }],
+                subs: [{ title: 'Types and variables', priority: 'must' }, { title: 'Control flow', priority: 'must' }, { title: 'Functions and scope', priority: 'must' }, { title: 'Objects and arrays', priority: 'must' }, { title: 'Modules', priority: 'rec' }],
+            },
+            {
+                title: 'Asynchronous JavaScript', desc: 'Callbacks, promises and async/await', priority: 'must',
+                gate: { name: 'Async Gate', desc: 'Build a small app that fetches and shows data' },
+                subs: [{ title: 'Callbacks', priority: 'rec' }, { title: 'Promises', priority: 'must' }, { title: 'async / await', priority: 'must' }, { title: 'fetch and APIs', priority: 'must' }],
+            },
+            {
+                title: 'The browser', desc: 'Talking to the page', priority: 'rec',
+                subs: [{ title: 'The DOM', priority: 'must' }, { title: 'Events', priority: 'must' }, { title: 'Storage', priority: 'rec' }, { title: 'Web APIs', priority: 'nice' }],
+            },
+            {
+                title: 'Tooling', desc: 'Make your code easier to ship', priority: 'rec',
+                subs: [{ title: 'npm and package managers', priority: 'rec' }, { title: 'Testing', priority: 'rec' }, { title: 'Bundlers', priority: 'nice' }, { title: 'Linting and formatting', priority: 'nice' }],
+            },
+        ],
+    })
+    return { order: [fullstack.id, javascript.id], active: fullstack.id, maps: { [fullstack.id]: fullstack, [javascript.id]: javascript } }
+}
+
+// Someone who used the app before has a single roadmap in the old "roadmap" key: keep it as their first roadmap
+const initialStore = () => {
+    const legacy = getStore('roadmap', null)
+    if (legacy && Array.isArray(legacy.topics)) {
+        const m = normMap({ ...legacy, id: 'main' })
+        return { order: [m.id], active: m.id, maps: { [m.id]: m } }
+    }
+    return seedMaps()
+}
 
 const locate = (d, id) => {
     for (const t of d.topics) {
@@ -66,10 +110,33 @@ const locate = (d, id) => {
     }
     return null
 }
-const flat = d => d.topics.flatMap(t => [t, ...t.subs])
-const prog = t => {
-    const u = [...t.steps, ...t.subs.map(s => ({ done: s.status === 'done' }))]
-    return u.length ? Math.round((100 * u.filter(x => x.done).length) / u.length) : t.status === 'done' ? 100 : 0
+const itemsOf = m => m.topics.flatMap(t => [t, ...t.subs])
+
+/*
+  Linked roadmaps: an item with a "ref" is done when every topic and subtopic of that roadmap is done.
+  "chain" lists the roadmaps we are already inside, so a loop (A -> B -> A) can never run forever.
+*/
+function effStatus(t, maps, chain = []) {
+    if (!t.ref || !maps[t.ref] || chain.includes(t.ref)) return t.status
+    const p = mapProgress(maps[t.ref], maps, [...chain, t.ref])
+    return p.total && p.done === p.total ? 'done' : p.done > 0 ? 'doing' : 'todo'
+}
+function mapProgress(m, maps, chain = [m.id]) {
+    const items = itemsOf(m)
+    const done = items.filter(i => effStatus(i, maps, chain) === 'done').length
+    return { done, total: items.length, pct: items.length ? Math.round((100 * done) / items.length) : 0 }
+}
+// Does roadmap "from" point (directly or through others) at roadmap "target"?
+function reaches(maps, from, target, seen = new Set()) {
+    if (from === target) return true
+    if (seen.has(from) || !maps[from]) return false
+    seen.add(from)
+    return itemsOf(maps[from]).some(i => i.ref && reaches(maps, i.ref, target, seen))
+}
+const prog = (t, maps) => {
+    if (t.ref && maps[t.ref]) return mapProgress(maps[t.ref], maps).pct
+    const u = [...t.steps, ...t.subs.map(s => ({ done: effStatus(s, maps) === 'done' }))]
+    return u.length ? Math.round((100 * u.filter(x => x.done).length) / u.length) : effStatus(t, maps) === 'done' ? 100 : 0
 }
 const reid = x => {
     if (!x || typeof x !== 'object') return
@@ -92,17 +159,22 @@ const svgEl = (tag, attrs) => {
 }
 
 /* ---------- map pieces ---------- */
-function Node({ t, n, dim, onOpen, onToggle }) {
+function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef }) {
+    const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
+    const status = effStatus(t, maps)
     return (
-        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${t.status}${n ? '' : ' s'}${dim ? ' dim' : ''}`}>
-            <button className="rm-chk" title={t.status === 'done' ? 'Mark as not done' : 'Mark as done'} aria-label={`Toggle ${t.title || 'item'} done`}
-                aria-pressed={t.status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
+        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${linked ? ' linked' : ''}`}>
+            <button className="rm-chk" disabled={!!linked}
+                title={linked ? 'Done automatically when the linked roadmap is finished' : status === 'done' ? 'Mark as not done' : 'Mark as done'}
+                aria-label={`Toggle ${t.title || 'item'} done`} aria-pressed={status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
+            {linked && <button className="rm-go" onClick={() => onGoRef(linked.id)} title={`Open the ${linked.title} roadmap`} aria-label={`Open the ${linked.title} roadmap`}>↗</button>}
             <button className="rm-body" onClick={() => onOpen(t.id)}>
                 <b>{n ? n + '. ' : ''}{t.title || 'Untitled'}</b>
                 {n && t.when && <em>{t.when}</em>}
                 {n && t.desc && <small>{t.desc}</small>}
+                {linked && <span className="rm-ref">↗ {linked.title}</span>}
                 <span className="rm-pr">{PR[t.priority]}</span>
-                {n && <span className="rm-bar"><i style={{ width: prog(t) + '%' }} /></span>}
+                {(n || linked) && <span className="rm-bar"><i style={{ width: prog(t, maps) + '%' }} /></span>}
             </button>
         </div>
     )
@@ -129,7 +201,7 @@ function Row({ id, children, onRemove }) {
     )
 }
 
-function Drawer({ data, sel, setSel, api }) {
+function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap }) {
     const hit = sel && locate(data, sel)
     const [reading, setReading] = useState(true)
     const [armed, setArmed] = useState(false)
@@ -158,11 +230,12 @@ function Drawer({ data, sel, setSel, api }) {
 
     const text = (obj, key, ph, extra) => <input type="text" value={obj[key] || ''} placeholder={ph} aria-label={ph} onChange={e => api.patchItem(t.id, key, obj, e.target.value)} {...extra} />
     const topText = (key, ph, extra) => <input type="text" value={t[key] || ''} placeholder={ph} aria-label={ph} onChange={e => api.patch(t.id, { [key]: e.target.value })} {...extra} />
-    const seg = (label, opts, key) => (
+    const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
+    const seg = (label, opts, key, disabled) => (
         <div>
             <div className="rm-lb">{label}</div>
             <div className="row">
-                {Object.entries(opts).map(([v, l]) => <button key={v} className={'btn sm' + (t[key] === v ? ' on' : '')} onClick={() => api.patch(t.id, { [key]: v })}>{l}</button>)}
+                {Object.entries(opts).map(([v, l]) => <button key={v} disabled={disabled} className={'btn sm' + ((key === 'status' ? effStatus(t, maps) : t[key]) === v ? ' on' : '')} onClick={() => api.patch(t.id, { [key]: v })}>{l}</button>)}
             </div>
         </div>
     )
@@ -193,7 +266,30 @@ function Drawer({ data, sel, setSel, api }) {
                 <div className="grow">{topText('desc', 'Short description')}</div>
                 <div style={{ width: 140 }}>{topText('when', 'Timeframe')}</div>
             </div>
-            {seg('Status', STATUS, 'status')}
+            <div>
+                <div className="rm-lb">Linked roadmap</div>
+                <select value={t.ref || ''} aria-label="Linked roadmap" onChange={e => api.setRef(t.id, e.target.value || null)}>
+                    <option value="">None</option>
+                    {order.filter(id => id !== currentId).map(id => {
+                        const loops = reaches(maps, id, currentId)
+                        return <option key={id} value={id} disabled={loops}>{maps[id].title || 'Untitled roadmap'}{loops ? ' (would loop back here)' : ''}</option>
+                    })}
+                </select>
+                {linked && (() => {
+                    const p = mapProgress(linked, maps)
+                    return (
+                        <div className="rm-linkbox">
+                            <div className="rm-bar"><i style={{ width: p.pct + '%' }} /></div>
+                            <div className="row">
+                                <span className="small grow">{p.done} of {p.total} items done in <b>{linked.title}</b></span>
+                                <button className="btn sm" onClick={() => onOpenRoadmap(linked.id)}>Open roadmap →</button>
+                            </div>
+                            <p className="muted small" style={{ margin: 0 }}>This item is done when every topic and subtopic of that roadmap is done.</p>
+                        </div>
+                    )
+                })()}
+            </div>
+            {seg('Status', STATUS, 'status', !!linked)}
             {seg('Priority', PR, 'priority')}
 
             <section>
@@ -207,7 +303,7 @@ function Drawer({ data, sel, setSel, api }) {
             </section>
 
             <section>
-                <h3>Checklist · {prog(t)}%</h3>
+                <h3>Checklist · {prog(t, maps)}%</h3>
                 {t.steps.map(x => (
                     <Row key={x.id} id={x.id} onRemove={() => api.removeIn(t.id, 'steps', x.id)}>
                         <input type="checkbox" checked={x.done} aria-label="Done" onChange={e => { api.patchItem(t.id, 'done', x, e.target.checked, 'steps'); play(e.target.checked ? 'check' : 'uncheck') }} />
@@ -223,7 +319,7 @@ function Drawer({ data, sel, setSel, api }) {
                     <h3>Subtopics</h3>
                     {t.subs.map(x => (
                         <Row key={x.id} id={x.id} onRemove={() => api.removeIn(t.id, 'subs', x.id)}>
-                            <input type="checkbox" checked={x.status === 'done'} aria-label="Done" onChange={e => { api.patchItem(t.id, 'status', x, e.target.checked ? 'done' : 'todo', 'subs'); play(e.target.checked ? 'check' : 'uncheck') }} />
+                            <input type="checkbox" checked={effStatus(x, maps) === 'done'} disabled={!!(x.ref && maps[x.ref])} title={x.ref && maps[x.ref] ? 'Follows the linked roadmap' : undefined} aria-label="Done" onChange={e => { api.patchItem(t.id, 'status', x, e.target.checked ? 'done' : 'todo', 'subs'); play(e.target.checked ? 'check' : 'uncheck') }} />
                             <div className="col">
                                 <input type="text" value={x.title} placeholder="Subtopic title" aria-label="Subtopic title" onChange={e => api.patchItem(t.id, 'title', x, e.target.value, 'subs')} />
                                 <select value={x.priority} aria-label="Priority" onChange={e => api.patchItem(t.id, 'priority', x, e.target.value, 'subs')}>
@@ -295,19 +391,39 @@ function Drawer({ data, sel, setSel, api }) {
     )
 }
 
-function BackupModal({ data, setData, onClose }) {
-    const [text, setText] = useState(() => JSON.stringify(data, null, 2))
+function BackupModal({ store, activeId, setRoadmaps, onClose }) {
+    const [scope, setScope] = useState('all')
+    const make = sc => JSON.stringify(sc === 'all' ? store : store.maps[activeId], null, 2)
+    const [text, setText] = useState(() => make('all'))
     const [armed, setArmed] = useState(false)
     const [msg, setMsg] = useState('')
+
+    const pickScope = sc => {
+        setScope(sc)
+        setText(make(sc))
+    }
 
     const importJSON = () => {
         try {
             const d = JSON.parse(text)
-            if (!Array.isArray(d.topics)) throw new Error('"topics" must be an array')
-            setData({ title: String(d.title || ''), topics: d.topics.map(t => norm(t)) })
-            onClose()
+            if (d && d.maps && Array.isArray(d.order)) {
+                // a whole set of roadmaps: replaces everything
+                const maps = {}
+                d.order.forEach(id => { if (d.maps[id]) maps[id] = normMap({ ...d.maps[id], id }) })
+                const order = Object.keys(maps)
+                if (!order.length) throw new Error('No roadmaps found in this file')
+                setRoadmaps({ order, active: maps[d.active] ? d.active : order[0], maps })
+                notify({ title: `Imported ${order.length} roadmap${order.length > 1 ? 's' : ''}`, icon: '📥' })
+            } else if (d && Array.isArray(d.topics)) {
+                // one roadmap: added next to the others
+                const m = normMap({ ...d, id: uid() })
+                setRoadmaps({ order: [...store.order, m.id], active: m.id, maps: { ...store.maps, [m.id]: m } })
+                notify({ title: 'Roadmap added', body: m.title, icon: '📥' })
+            } else {
+                throw new Error('Expected a roadmap ("topics") or a set of roadmaps ("maps" and "order")')
+            }
             play('save')
-            notify({ title: 'Roadmap imported', icon: '📥' })
+            onClose()
         } catch (e) {
             setMsg('Invalid JSON: ' + e.message)
         }
@@ -315,7 +431,7 @@ function BackupModal({ data, setData, onClose }) {
     const download = () => {
         const a = document.createElement('a')
         a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
-        a.download = 'roadmap.json'
+        a.download = scope === 'all' ? 'roadmaps.json' : `${(store.maps[activeId].title || 'roadmap').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.json`
         a.click()
         setTimeout(() => URL.revokeObjectURL(a.href), 1000)
     }
@@ -331,15 +447,64 @@ function BackupModal({ data, setData, onClose }) {
     return (
         <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
             <div className="modal" style={{ width: 'min(680px,100%)' }} role="dialog" aria-label="Backup and restore">
-                <h2>Backup and restore</h2>
-                <textarea rows={14} value={text} onChange={e => setText(e.target.value)} spellCheck="false" aria-label="Roadmap JSON" style={{ font: '12px/1.4 ui-monospace,monospace' }} />
+                <h2>Backup and restore roadmaps</h2>
+                <div className="row" style={{ marginBottom: 8 }}>
+                    <span className="small muted">Export</span>
+                    <button className={'btn sm' + (scope === 'all' ? ' on' : '')} onClick={() => pickScope('all')}>All roadmaps</button>
+                    <button className={'btn sm' + (scope === 'this' ? ' on' : '')} onClick={() => pickScope('this')}>Only this roadmap</button>
+                </div>
+                <textarea rows={13} value={text} onChange={e => setText(e.target.value)} spellCheck="false" aria-label="Roadmap JSON" style={{ font: '12px/1.4 ui-monospace,monospace' }} />
+                <p className="muted small" style={{ margin: '6px 0 0' }}>Importing a whole set replaces every roadmap. Importing a single roadmap adds it to your list.</p>
                 <div className="row" style={{ marginTop: 10 }}>
                     <button className="btn primary" onClick={importJSON}>Import JSON</button>
                     <button className="btn" onClick={copy}>Copy</button>
                     <button className="btn" onClick={download}>Download</button>
-                    <button className="btn danger" onClick={() => { if (armed) { setData(seed()); onClose() } else setArmed(true) }}>{armed ? 'Click again to reset' : 'Reset to example'}</button>
+                    <button className="btn danger" onClick={() => { if (armed) { setRoadmaps(seedMaps()); play('save'); onClose() } else setArmed(true) }}>{armed ? 'Click again to reset' : 'Reset to the examples'}</button>
                     <span className="grow small muted">{msg}</span>
                     <button className="btn" onClick={onClose}>Close</button>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+function NewRoadmapModal({ currentTitle, onCreate, onClose }) {
+    const [title, setTitle] = useState('')
+    const [template, setTemplate] = useState('blank')
+    return (
+        <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+            <form className="modal" role="dialog" aria-label="New roadmap" onSubmit={e => { e.preventDefault(); onCreate(title.trim(), template) }}>
+                <h2>New roadmap</h2>
+                <label className="field"><span>Name</span>
+                    <input autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="Python, DevOps, Data science…" />
+                </label>
+                <div className="field"><span>Start from</span>
+                    <div className="row">
+                        <button type="button" className={'btn sm' + (template === 'blank' ? ' on' : '')} onClick={() => setTemplate('blank')}>Empty roadmap</button>
+                        <button type="button" className={'btn sm' + (template === 'copy' ? ' on' : '')} onClick={() => setTemplate('copy')}>Copy of “{currentTitle || 'this roadmap'}”</button>
+                    </div>
+                </div>
+                <div className="row"><span className="grow" /><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="submit" className="btn primary">Create roadmap</button></div>
+            </form>
+        </div>
+    )
+}
+
+function ColorsModal({ colors, onChange, onReset, onClose }) {
+    return (
+        <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+            <div className="modal" role="dialog" aria-label="Priority colours">
+                <h2>Priority colours</h2>
+                <p className="muted small" style={{ marginTop: -6 }}>Each square is tinted with the colour of its priority. The border style (solid, dashed, dotted) stays as a second clue.</p>
+                {Object.entries(PR).map(([k, label]) => (
+                    <label key={k} className="row" style={{ marginBottom: 10 }}>
+                        <input type="color" value={colors[k]} onChange={e => onChange(k, e.target.value)} aria-label={`${label} colour`} style={{ width: 44, height: 32, padding: 0, border: 0, background: 'none', cursor: 'pointer' }} />
+                        <span className={`rm-sample p-${k}`} style={{ '--pc': colors[k] }}>{label}</span>
+                    </label>
+                ))}
+                <div className="row" style={{ marginTop: 12 }}>
+                    <button className="btn" onClick={onReset}>Reset to default colours</button>
+                    <span className="grow" /><button className="btn primary" onClick={onClose}>Done</button>
                 </div>
             </div>
         </div>
@@ -350,17 +515,41 @@ function BackupModal({ data, setData, onClose }) {
    Page
    ============================================================ */
 export default function Roadmap() {
-    const [data, setData, update] = useStore('roadmap', seed)
+    const [store, setRoadmaps, updateStore] = useStore('roadmaps', initialStore)
+    const [settings, , updateSettings] = useStore('settings', { dailyGoal: 3 })
     const [sel, setSel] = useState(null)
     const [query, setQuery] = useState('')
     const [pf, setPf] = useState(null)
     const [hideSubs, setHideSubs] = useState(false)
     const [backup, setBackup] = useState(false)
+    const [creating, setCreating] = useState(false)
+    const [colorsOpen, setColorsOpen] = useState(false)
+    const [menu, setMenu] = useState(false)
+    const [armed, setArmed] = useState(false)
+    const [trail, setTrail] = useState([]) // roadmaps we came from when following a link
     const mapRef = useRef(null)
     const rowsRef = useRef(null)
     const mainSvg = useRef(null)
     const subSvg = useRef(null)
     const drawRef = useRef(null)
+    const prevPct = useRef(null)
+
+    const maps = store.maps
+    const activeId = maps[store.active] ? store.active : store.order[0]
+    const data = maps[activeId] || { id: '', title: '', topics: [] }
+    const colors = { ...DEFAULT_COLORS, ...(settings.roadmapColors || {}) }
+    const st = t => effStatus(t, maps)
+
+    // Someone with the old single roadmap: save it as the first of their roadmaps
+    useEffect(() => {
+        if (!isStored('roadmaps') && isStored('roadmap')) setRoadmaps(getStore('roadmaps', initialStore))
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Edit the roadmap that is open
+    const update = fn => updateStore(d => {
+        const m = d.maps[activeId]
+        if (m) fn(m)
+    })
 
     /* ----- mutations (updaters use block bodies so they never return a value) ----- */
     const api = {
@@ -379,6 +568,15 @@ export default function Roadmap() {
             const target = list ? h.t[list].find(x => x.id === item.id) : h.t
             if (target) target[key] = value
         }),
+        // Point an item at another roadmap (or clear it). A link that would loop back is refused.
+        setRef: (id, ref) => {
+            if (ref && (ref === activeId || reaches(maps, ref, activeId))) return
+            update(d => {
+                const h = locate(d, id)
+                if (h) h.t.ref = ref || null
+            })
+            play('tick')
+        },
         addIn: (id, key, item) => {
             update(d => {
                 const h = locate(d, id)
@@ -425,7 +623,8 @@ export default function Roadmap() {
     }
 
     const toggleDone = (t, el) => {
-        const done = t.status !== 'done'
+        if (t.ref && maps[t.ref]) return
+        const done = st(t) !== 'done'
         api.patch(t.id, { status: done ? 'done' : 'todo' })
         const isTopic = data.topics.some(x => x.id === t.id)
         play(done ? (isTopic ? 'complete' : 'check') : 'uncheck')
@@ -455,23 +654,100 @@ export default function Roadmap() {
         setSel(s.id)
     }
 
+    /* ----- several roadmaps ----- */
+    const goRoadmap = (id, push = false) => {
+        if (!maps[id] || id === activeId) return
+        setTrail(t => (push ? [...t, activeId] : []))
+        updateStore(d => { d.active = id })
+        setSel(null)
+        setQuery('')
+        setPf(null)
+        setMenu(false)
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+    const goBack = () => {
+        const last = trail[trail.length - 1]
+        setTrail(trail.slice(0, -1))
+        if (maps[last]) updateStore(d => { d.active = last })
+        setSel(null)
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+    const createRoadmap = (title, template) => {
+        const id = uid()
+        const base = template === 'copy' ? JSON.parse(JSON.stringify(data)) : { topics: [] }
+        reid(base)
+        updateStore(d => {
+            d.maps[id] = normMap({ ...base, id, title: title || (template === 'copy' ? `${data.title} (copy)` : 'New roadmap') })
+            d.order.push(id)
+            d.active = id
+        })
+        setCreating(false)
+        setTrail([])
+        setSel(null)
+        setMenu(false)
+        play('save')
+    }
+    const deleteRoadmap = () => {
+        if (store.order.length < 2) return
+        const id = activeId
+        updateStore(d => {
+            delete d.maps[id]
+            d.order = d.order.filter(x => x !== id)
+            // items that pointed at the deleted roadmap become normal items again
+            Object.values(d.maps).forEach(m => itemsOf(m).forEach(i => { if (i.ref === id) i.ref = null }))
+            d.active = d.order[0]
+        })
+        setSel(null)
+        setTrail([])
+        setMenu(false)
+        setArmed(false)
+        play('delete')
+    }
+    const moveRoadmap = dir => {
+        updateStore(d => {
+            const i = d.order.indexOf(activeId)
+            const j = i + dir
+            if (i < 0 || j < 0 || j >= d.order.length) return
+            d.order.splice(j, 0, d.order.splice(i, 1)[0])
+        })
+        play('move')
+    }
+
     /* ----- derived ----- */
     const q = query.trim().toLowerCase()
     const matches = t => !q || JSON.stringify([t.title, t.desc, t.notes, t.steps.map(s => s.t)]).toLowerCase().includes(q)
     const vis = t => (!pf || t.priority === pf) && matches(t)
-    const all = flat(data)
-    const doneCount = all.filter(t => t.status === 'done').length
+    const all = itemsOf(data)
+    const doneCount = all.filter(t => st(t) === 'done').length
     const must = all.filter(t => t.priority === 'must')
     const pct = all.length ? Math.round((100 * doneCount) / all.length) : 0
 
     const goNext = () => {
-        const left = all.filter(t => t.status !== 'done')
+        const left = all.filter(t => st(t) !== 'done')
         const t = left.find(x => x.priority === 'must') || left[0]
         if (!t) return notify({ title: 'Everything is done', body: 'Add a new topic to keep going.', icon: '🏆' })
         const el = document.getElementById('rm-n-' + t.id)
         if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
         notify({ title: 'Next up', body: t.title || 'Untitled', icon: '🎯' })
     }
+
+    // Celebrate when a whole roadmap becomes finished, and say where that counts as done too
+    useEffect(() => {
+        const now = Object.fromEntries(store.order.filter(id => maps[id]).map(id => [id, mapProgress(maps[id], maps).pct]))
+        const prev = prevPct.current
+        prevPct.current = now
+        if (!prev) return
+        Object.keys(now).forEach(id => {
+            if (now[id] !== 100 || prev[id] === undefined || prev[id] >= 100 || !maps[id].topics.length) return
+            const users = store.order.filter(o => o !== id && maps[o] && itemsOf(maps[o]).some(i => i.ref === id)).map(o => maps[o].title)
+            play('levelup')
+            notify({
+                title: `${maps[id].title} roadmap complete`,
+                body: users.length ? `Also marked as done in: ${users.join(', ')}` : 'Every topic and subtopic is done.',
+                icon: '🏆',
+            })
+        })
+    }, [store]) // eslint-disable-line react-hooks/exhaustive-deps
 
     /* ----- connector lines: drawn from the real position of every square ----- */
     drawRef.current = () => {
@@ -501,7 +777,7 @@ export default function Roadmap() {
             const t = data.topics[i]
             svg.children[2 * i].setAttribute('d', D)
             svg.children[2 * i + 1].setAttribute('d', D)
-            svg.children[2 * i + 1].classList.toggle('on', !!t && t.status === 'done' && (!t.gate || t.gate.done))
+            svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
         })
         ls.replaceChildren()
         if (hideSubs || mobile) return
@@ -518,7 +794,7 @@ export default function Roadmap() {
                 const xe = (toRight ? e.left : e.right) - m.left
                 const ys = box.top + box.height / 2 - m.top
                 const ye = e.top + e.height / 2 - m.top
-                ls.append(svgEl('path', { class: 'rm-sl' + (s.status === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
+                ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
             })
         })
     }
@@ -544,9 +820,40 @@ export default function Roadmap() {
         return () => window.removeEventListener('keydown', onKey)
     }, [sel])
 
+    const lastFrom = trail.length ? maps[trail[trail.length - 1]] : null
+
     return (
-        <div className="rm">
+        <div className="rm" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt }}>
             <style>{CSS}</style>
+
+            <div className="rm-tabs" role="tablist" aria-label="Roadmaps">
+                {store.order.filter(id => maps[id]).map(id => (
+                    <button key={id} role="tab" aria-selected={id === activeId} className={'rm-tab' + (id === activeId ? ' on' : '')} onClick={() => goRoadmap(id)}>
+                        <span className="rm-tabname">{maps[id].title || 'Untitled'}</span>
+                        <small>{mapProgress(maps[id], maps).pct}%</small>
+                    </button>
+                ))}
+                <button className="rm-tab rm-newtab" onClick={() => setCreating(true)}>+ New roadmap</button>
+                <span className="rm-menuwrap">
+                    <button className="rm-tab rm-newtab" onClick={() => { setMenu(!menu); setArmed(false) }} aria-label="Roadmap actions" aria-expanded={menu}>⋯</button>
+                    {menu && (
+                        <>
+                            <div className="rm-menuback" onClick={() => setMenu(false)} />
+                            <div className="rm-menu" role="menu">
+                                <button role="menuitem" onClick={() => { createRoadmap(`${data.title} (copy)`, 'copy') }}>Duplicate this roadmap</button>
+                                <button role="menuitem" disabled={store.order.indexOf(activeId) < 1} onClick={() => moveRoadmap(-1)}>Move left</button>
+                                <button role="menuitem" disabled={store.order.indexOf(activeId) >= store.order.length - 1} onClick={() => moveRoadmap(1)}>Move right</button>
+                                <button role="menuitem" className="danger" disabled={store.order.length < 2} onClick={() => { if (armed) deleteRoadmap(); else setArmed(true) }}>{armed ? 'Click again to delete' : 'Delete this roadmap'}</button>
+                            </div>
+                        </>
+                    )}
+                </span>
+            </div>
+
+            {lastFrom && (
+                <div className="rm-back"><button className="btn sm" onClick={goBack}>← Back to {lastFrom.title || 'previous roadmap'}</button></div>
+            )}
+
             <div className="rm-head">
                 <input className="rm-title" value={data.title} onChange={e => update(d => { d.title = e.target.value })} aria-label="Roadmap title" />
                 <div className="row">
@@ -561,10 +868,11 @@ export default function Roadmap() {
                     {Object.entries(PR).map(([k, v]) => (
                         <button key={k} className={`rm-ch p-${k}` + (pf === k ? ' act' : '')} onClick={() => setPf(pf === k ? null : k)} aria-pressed={pf === k}>{v}</button>
                     ))}
+                    <button className="btn sm ghost" onClick={() => setColorsOpen(true)}>Colours</button>
                 </div>
                 <div className="rm-pg">
                     <div className="rm-track"><i style={{ width: pct + '%' }} /></div>
-                    <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => t.status === 'done').length}/{must.length}</span>
+                    <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}</span>
                 </div>
             </div>
 
@@ -576,11 +884,11 @@ export default function Roadmap() {
                     {data.topics.map((t, i) => (
                         <div key={t.id} id={'rm-r-' + t.id} className={'rm-row ' + (i % 2 ? 'r' : 'l')}>
                             <div className="rm-cell">
-                                <Node t={t} n={i + 1} dim={!(vis(t) || t.subs.some(vis))} onOpen={openItem} onToggle={toggleDone} />
+                                <Node t={t} n={i + 1} maps={maps} dim={!(vis(t) || t.subs.some(vis))} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />
                                 {t.gate && <Gate t={t} onToggle={toggleGate} />}
                             </div>
                             <div className="rm-subs">
-                                {t.subs.map(s => <Node key={s.id} t={s} dim={!vis(s)} onOpen={openItem} onToggle={toggleDone} />)}
+                                {t.subs.map(s => <Node key={s.id} t={s} maps={maps} dim={!vis(s)} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />)}
                                 <button className="rm-addsub" onClick={() => addSub(t)}>+ Subtopic</button>
                             </div>
                         </div>
@@ -589,8 +897,14 @@ export default function Roadmap() {
             </div>
 
             {sel && <div className="rm-scrim" onClick={() => setSel(null)} />}
-            <Drawer data={data} sel={sel} setSel={setSel} api={api} />
-            {backup && <BackupModal data={data} setData={setData} onClose={() => setBackup(false)} />}
+            <Drawer data={data} maps={maps} order={store.order} currentId={activeId} sel={sel} setSel={setSel} api={api} onOpenRoadmap={id => goRoadmap(id, true)} />
+            {backup && <BackupModal store={store} activeId={activeId} setRoadmaps={setRoadmaps} onClose={() => setBackup(false)} />}
+            {creating && <NewRoadmapModal currentTitle={data.title} onCreate={createRoadmap} onClose={() => setCreating(false)} />}
+            {colorsOpen && (
+                <ColorsModal colors={colors} onClose={() => setColorsOpen(false)}
+                    onChange={(k, v) => updateSettings(d => { d.roadmapColors = { ...DEFAULT_COLORS, ...(d.roadmapColors || {}), [k]: v } })}
+                    onReset={() => updateSettings(d => { delete d.roadmapColors })} />
+            )}
         </div>
     )
 }
@@ -601,6 +915,19 @@ const CSS = `
 .rm-title{border:0!important;background:none!important;font:700 26px var(--head)!important;padding:2px 4px!important;flex:1 1 280px;min-width:0}
 .rm-search{width:150px!important}
 .rm-legend{flex:1 1 100%;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.rm-tabs{display:flex;gap:6px;align-items:center;overflow-x:auto;padding:2px 0 12px;margin-bottom:6px;scrollbar-width:thin}
+.rm-tab{display:inline-flex;gap:8px;align-items:center;flex:none;border:1px solid var(--ln);background:var(--sf);color:var(--mu);border-radius:999px;padding:6px 14px;cursor:pointer;font-weight:500;white-space:nowrap}
+.rm-tab:hover{border-color:var(--ac);color:var(--tx)}
+.rm-tab.on{background:color-mix(in srgb,var(--ac) 16%,var(--sf));border-color:var(--ac);color:var(--tx)}
+.rm-tab small{font-size:11px;font-weight:600;color:var(--mu)}.rm-tab.on small{color:var(--ac)}
+.rm-tabname{max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.rm-newtab{border-style:dashed;background:none}
+.rm-menuwrap{position:relative;flex:none}
+.rm-menuback{position:fixed;inset:0;z-index:30}
+.rm-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:31;min-width:210px;background:var(--sf);border:1px solid var(--ln);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.3);padding:6px;display:grid;animation:rise .12s}
+.rm-menu button{border:0;background:none;text-align:left;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--tx)}
+.rm-menu button:hover:not(:disabled){background:var(--sf2)}.rm-menu button:disabled{opacity:.4;cursor:not-allowed}.rm-menu .danger{color:var(--bad)}
+.rm-back{margin-bottom:8px}
 .rm-ch{font-size:12px;border:1.5px solid var(--mu);border-radius:6px;background:none;color:var(--tx);padding:2px 10px;cursor:pointer}
 .rm-ch.act{box-shadow:0 0 0 2px var(--ac)}
 .rm-pg{flex:1 1 100%;display:flex;align-items:center;gap:12px}
@@ -616,18 +943,29 @@ const CSS = `
 .rm-subs{display:flex;flex-direction:column;gap:12px;padding-top:6px}.nosub .rm-subs{display:none}
 .rm-node{position:relative;width:230px;background:var(--sf);border:1.5px solid var(--mu);border-radius:8px;padding:10px 12px;transition:border-color .2s,background .2s,opacity .2s}
 .rm-node.s{width:170px;padding:8px 10px;border-radius:6px}
-.p-must{border:2px solid var(--ac);background:color-mix(in srgb,var(--ac) 9%,var(--sf))}
-.p-rec{border:1.5px solid var(--mu)}.p-nice{border:1.5px dashed var(--mu)}.p-opt{border:1.5px dotted var(--mu)}
-.rm-node.doing{border-color:var(--wip)}.rm-node.done{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 10%,var(--sf))}
+/* every priority has its own colour: a tint inside, a coloured border, and a different border style as a second clue */
+.p-must,.p-rec,.p-nice,.p-opt{border-color:var(--pc);background:color-mix(in srgb,var(--pc) 14%,var(--sf))}
+.p-must{--pc:var(--c-must);border-width:2px;border-style:solid}
+.p-rec{--pc:var(--c-rec);border-width:1.5px;border-style:solid}
+.p-nice{--pc:var(--c-nice);border-width:1.5px;border-style:dashed}
+.p-opt{--pc:var(--c-opt);border-width:1.5px;border-style:dotted}
+.rm-node.doing{border-color:var(--wip)}.rm-node.done{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,var(--sf))}
 .rm-node:hover{border-color:var(--ac)}.rm-node.dim{opacity:.25}
-.rm-ch.p-must{background:color-mix(in srgb,var(--ac) 9%,var(--sf))}
+.rm-sample{padding:4px 16px;border-radius:8px;font-weight:600}
 .rm-chk{position:absolute;top:8px;right:8px;width:20px;height:20px;border-radius:5px;border:1.5px solid var(--mu);background:none;color:transparent;font-size:12px;font-weight:700;cursor:pointer;padding:0}
 .rm-node.done>.rm-chk{background:var(--ok);border-color:var(--ok);color:#fff}
 .rm-body{all:unset;cursor:pointer;display:grid;gap:3px;width:100%}.rm-body:focus-visible{outline:2px solid var(--ac);outline-offset:6px;border-radius:6px}
 .rm-body b{font:600 16px/1.25 var(--head);padding-right:26px}.rm-node.s .rm-body b{font-size:14px}
 .rm-body em{font-style:normal;font-size:12px;color:var(--mu)}
 .rm-body small{font-size:12px;color:var(--mu);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
-.rm-pr{font-size:11px;color:var(--mu)}
+.rm-pr{font-size:11px;color:color-mix(in srgb,var(--pc) 70%,var(--tx));font-weight:600}
+.rm-ref{font-size:12px;font-weight:600;color:var(--ac)}
+.rm-go{position:absolute;top:8px;right:34px;width:20px;height:20px;border-radius:5px;border:1.5px solid var(--ac);background:none;color:var(--ac);font-size:12px;font-weight:700;cursor:pointer;padding:0;line-height:1}
+.rm-go:hover{background:var(--ac);color:#fff}
+.rm-node.linked .rm-body b{padding-right:54px}
+.rm-chk:disabled{opacity:.55;cursor:not-allowed}
+.rm-linkbox{display:grid;gap:8px;margin-top:10px;padding:12px;border:1px solid var(--ln);border-radius:8px;background:var(--sf2)}
+.rm-linkbox .rm-bar{margin:0}
 .rm-bar{height:4px;border-radius:4px;background:var(--ln);overflow:hidden;margin-top:4px}.rm-bar i{display:block;height:100%;background:var(--ok);transition:width .4s}
 .rm-gl{display:block;width:1.5px;height:14px;background:var(--mu);margin-left:14px}
 .rm-gr{display:flex;gap:12px;align-items:flex-start;margin-left:6px}.rm-gr b{font-size:12px}.rm-gr small{display:block;color:var(--mu);font-size:12px;line-height:1.35}
