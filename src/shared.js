@@ -44,6 +44,9 @@ export const getStore = (key, initial) => read(key, initial)
 // 'roadmap' is the old single-roadmap key. It is still synced so that other devices can migrate it to 'roadmaps'.
 export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps', 'studygroup']
 
+// Default of the synced "studygroup" key. It lives here so every file that reads the key agrees on its shape.
+export const STUDY_DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0, profile: {}, celebrated: {}, shared: [] }
+
 const changeHooks = new Set()
 export const onStoreChange = fn => {
     changeHooks.add(fn)
@@ -167,6 +170,13 @@ export const uid = () => Math.random().toString(36).slice(2, 9)
 export const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n))
 export const pad = n => String(n).padStart(2, '0')
 
+// Links typed by the user: only web links are ever shown or opened, so a link can never run code
+export const isHttp = v => /^https?:\/\//i.test(v)
+export const normalizeUrl = v => {
+    const s = String(v || '').trim()
+    return !s ? '' : isHttp(s) ? s : 'https://' + s.replace(/^[a-z]+:\/\//i, '')
+}
+
 export function useNow(ms = 1000) {
     const [now, setNow] = useState(() => new Date())
     useEffect(() => {
@@ -194,7 +204,6 @@ export const addDays = (d, n) => {
     x.setDate(x.getDate() + n)
     return x
 }
-export const diffDays = (a, b) => Math.round((startOfDay(a) - startOfDay(b)) / 86400000)
 
 // getDay(): Sun 0 ... Fri 5, Sat 6  ->  Sat 0, Sun 1 ... Fri 6
 export const dayIndex = d => (d.getDay() + 1) % 7
@@ -444,13 +453,13 @@ textarea{resize:vertical}
 ::selection{background:color-mix(in srgb,var(--ac) 30%,transparent)}
 .btn{font-weight:500;border:1px solid var(--ln);background:var(--sf);color:var(--tx);border-radius:8px;padding:7px 13px;cursor:pointer;transition:border-color .15s,background .15s,transform .1s;white-space:nowrap}
 .btn:hover{border-color:var(--ac)}.btn:active{transform:translateY(1px)}
-.btn.primary{background:var(--ac);border-color:var(--ac);color:#fff}.btn.primary:hover{filter:brightness(1.08)}
+.btn.primary{background:linear-gradient(135deg,var(--ac),var(--ac2));border-color:var(--ac);color:#fff}.btn.primary:hover{filter:brightness(1.08)}
 .btn.danger{color:var(--bad)}.btn.danger:hover{border-color:var(--bad)}
 .btn.sm{padding:4px 10px;font-size:13px}.btn.ghost{background:none;border-color:transparent}.btn.ghost:hover{background:var(--sf2);border-color:var(--ln)}
 .btn.on{border-color:var(--ac);box-shadow:inset 0 0 0 1px var(--ac)}
 .icon-btn{border:0;background:none;color:var(--mu);cursor:pointer;border-radius:6px;padding:2px 7px;font-size:16px;line-height:1.4}
 .icon-btn:hover{background:var(--sf2);color:var(--tx)}
-.card{background:var(--sf);border:1px solid var(--ln);border-radius:14px;box-shadow:var(--shadow)}
+.card{background:var(--sf);border:1px solid var(--ln);border-radius:14px;box-shadow:var(--shadow);transition:box-shadow .2s,border-color .2s}
 .seg{display:inline-flex;gap:6px;flex-wrap:wrap}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row .grow{flex:1}
 .muted{color:var(--mu)}.small{font-size:13px}
@@ -465,6 +474,10 @@ textarea{resize:vertical}
 .toast b{display:block}.toast p{margin:2px 0 8px;color:var(--mu);font-size:14px}
 .confetti{position:fixed;width:7px;height:7px;border-radius:2px;pointer-events:none;z-index:200;animation:burst .85s ease-out forwards}
 .fadein{animation:fade .5s}
+.bar{height:8px;border-radius:8px;background:var(--ln);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;border-radius:8px;background:linear-gradient(90deg,var(--ac),var(--ac2));transition:width .5s}
+.bar i.full{background:linear-gradient(90deg,var(--ok),color-mix(in srgb,var(--ok) 60%,#fff))}
+.dot-pop{animation:pop .35s cubic-bezier(.2,.9,.3,1.4)}
 .ic-img{object-fit:contain;border-radius:4px;display:inline-block;vertical-align:middle;flex:none}
 .ic-em{line-height:1;display:inline-block;vertical-align:middle}
 .ic-picker{display:grid;gap:8px}
@@ -477,6 +490,7 @@ textarea{resize:vertical}
 @keyframes ring{0%,100%{transform:rotate(0)}15%{transform:rotate(14deg)}30%{transform:rotate(-12deg)}45%{transform:rotate(8deg)}60%{transform:rotate(-6deg)}}
 @keyframes burst{to{transform:translate(var(--dx),var(--dy)) rotate(var(--r));opacity:0}}
 @keyframes flicker{0%,100%{transform:scale(1) rotate(-2deg)}25%{transform:scale(1.07,.96) rotate(2deg)}50%{transform:scale(.96,1.06) rotate(-1deg)}75%{transform:scale(1.05,.98) rotate(3deg)}}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:none;opacity:1}}
 @keyframes glow{0%,100%{opacity:.55}50%{opacity:1}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 `

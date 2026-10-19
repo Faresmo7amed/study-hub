@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Database from './Database'
 import { play } from './sound'
 import {
-    BADGES, DAYS, TYPES, TYPE_KEYS, addDays, clamp, dayIndex, emptyWeek, getStore, hms, iso,
+    BADGES, DAYS, TYPES, TYPE_KEYS, addDays, clamp, dayIndex, emptyWeek, hms, iso,
     notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
     useNow, useStats, useStore, weekStart,
 } from './shared'
-import { toggleTodo } from "./todoActions.js"
+import { EVENT_COLORS, removeEvent, toggleTodo } from './todoActions'
+import Contributions from './Heatmap'
 
 const fmtShort = d => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
@@ -346,29 +347,7 @@ function WeekBoard() {
 /* ============================================================
    Calendar + events
    ============================================================ */
-const EVENT_COLORS = ['#7c6cff', '#3ddc97', '#ffb454', '#ff6b8b', '#4cc9f0', '#a3a3b8']
 const REMIND = [[0, 'At the time'], [5, '5 minutes before'], [10, '10 minutes before'], [15, '15 minutes before'], [30, '30 minutes before'], [60, '1 hour before'], [120, '2 hours before'], [1440, '1 day before']]
-
-// Delete an event, forget its reminders, and offer Undo for a few seconds
-function removeEvent(ev) {
-    const original = getStore('events', []).find(x => x.id === ev.id)
-    if (!original) return
-    setStore('events', cur => cur.filter(x => x.id !== ev.id), [])
-    setStore('fired', cur => Object.fromEntries(Object.entries(cur).filter(([k]) => !k.startsWith(ev.id + '|'))), {})
-    play('delete')
-    notify({
-        title: 'Event deleted',
-        body: original.title || 'Untitled event',
-        icon: '🗑️',
-        actions: [{
-            label: 'Undo',
-            onClick: () => {
-                setStore('events', cur => (cur.some(x => x.id === original.id) ? cur : [...cur, original]), [])
-                play('undo')
-            },
-        }],
-    })
-}
 
 function EventModal({ initial, onClose }) {
     const [ev, setEv] = useState(initial)
@@ -635,7 +614,9 @@ export default function Dashboard() {
                 <DayCard />
                 <StreakCard />
             </div>
+            <div id="section-activity"><Contributions /></div>
             <nav className="dash-jump" aria-label="Jump to section">
+                <button className="btn sm ghost" onClick={() => jump('section-activity')}>Activity</button>
                 <button className="btn sm ghost" onClick={() => jump('section-week')}>Week</button>
                 <button className="btn sm ghost" onClick={() => jump('section-calendar')}>Calendar</button>
                 <button className="btn sm ghost" onClick={() => jump('section-database')}>Courses database</button>
@@ -660,9 +641,9 @@ const CSS = `
 .dash-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
 .dash-side{display:grid;gap:20px}
 .side-card{padding:18px;display:grid;gap:10px}
+.dash>.card,.dash-hero>.card,.dash-grid>.card,.side-card{animation:rise .4s both}
+.dash-hero>.card:nth-child(2),.dash-side>.card:nth-child(2){animation-delay:.08s}
 .side-card h3{font-size:17px}
-.bar{height:8px;border-radius:8px;background:var(--ln);overflow:hidden;margin-top:6px}
-.bar i{display:block;height:100%;border-radius:8px;background:var(--ac);transition:width .5s}.bar i.full{background:var(--ok)}
 .dc{display:grid;grid-template-columns:1fr auto;gap:8px 28px;padding:26px 28px;position:relative;overflow:hidden;background:radial-gradient(circle at 100% 0,color-mix(in srgb,var(--ac) 14%,transparent),transparent 55%),var(--sf)}
 .dc h1{font-size:46px;line-height:1.05;margin-top:2px}
 .dc-date{font-size:17px;color:var(--mu);margin:2px 0 14px}
@@ -685,7 +666,7 @@ const CSS = `
 .st-week{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
 .st-day{display:grid;justify-items:center;gap:3px}
 .st-day span{width:30px;height:30px;border-radius:50%;border:2px solid var(--ln);display:grid;place-items:center;font-weight:700;font-size:14px;color:#fff}
-.st-day.on span{background:var(--ok);border-color:var(--ok)}
+.st-day.on span{background:linear-gradient(135deg,var(--ok),color-mix(in srgb,var(--ok) 60%,#fff));border-color:var(--ok);animation:pop .35s both}
 .st-day.today span{border-color:var(--ac);box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 25%,transparent)}
 .st-day.on.today span{border-color:var(--ok)}
 .st-day.future{opacity:.5}.st-day small{font-size:11px;color:var(--mu)}

@@ -175,3 +175,22 @@ export async function watchCheers(code, onData, onError) {
         onError,
     )
 }
+// groups/{code}/events/{uid_...}   { owner, title, date, time, at }   a study session planned for the whole group
+export async function saveGroupEvent(code, id, ev) {
+    const { F, db } = await load()
+    await withTimeout(F.setDoc(F.doc(db, 'groups', code, 'events', id), ev))
+}
+
+export async function deleteGroupEvent(code, id) {
+    const { F, db } = await load()
+    await withTimeout(F.deleteDoc(F.doc(db, 'groups', code, 'events', id)))
+}
+
+export async function watchGroupEvents(code, onData, onError) {
+    const { F, db } = await load()
+    return F.onSnapshot(
+        F.collection(db, 'groups', code, 'events'),
+        snap => onData(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+        onError,
+    )
+}

@@ -195,7 +195,6 @@ export function CloudSync() {
     useEffect(() => { startSync() }, [])
     return (
         <>
-            <style>{`.app-cloud.synced{color:var(--ok)}.app-cloud.offline,.app-cloud.error{color:var(--wip)}.app-cloud.choose{color:var(--bad);border-color:var(--bad)}`}</style>
             {s.phase === 'choose' && <ChooseModal />}
         </>
     )

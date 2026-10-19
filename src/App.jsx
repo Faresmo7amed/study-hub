@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
     BADGES, GLOBAL_CSS, checkBackup, dismissToast, downloadBackup, getStore, importAll, notify, setStore,
     systemNotify, useNow, useStats, useStore, useToasts,
@@ -10,7 +11,8 @@ import { AccountButton, AccountModal, CloudSync } from './Account'
 import { SoundButton, SoundModal } from './SoundSettings'
 import { play } from './sound'
 import StudyGroup, { StudyPublisher } from './StudyGroup'
-import { LeftRail, RightRail } from './Rails'
+import { LeftRail, RAIL_CSS, RightRail } from './Rails'
+import { SETTINGS_EVENT, SettingsModal } from './Settings'
 
 const PAGES = [
     { id: 'dashboard', label: 'Dashboard', icon: '◧' },
@@ -25,13 +27,15 @@ const fromHash = () => {
 }
 
 /* ---------- Top bar ---------- */
-function TopBar({ page, go, onBackup, onAccount, onSound }) {
+function TopBar({ page, go, onBackup, onAccount, onSound, onSettings, onPanels }) {
     const stats = useStats()
     const [meta] = useStore('meta', {})
     const now = useNow(60000)
     const stale = !meta.lastBackup || now.getTime() - meta.lastBackup > 7 * 86400000
     const [theme, setTheme] = useStore('theme', 'system')
     const [ui, setUi] = useStore('ui', { left: true, right: true })
+    const [more, setMore] = useState(false)
+    const [sound] = useStore('sound', { on: true })
     const [perm, setPerm] = useState(() => ('Notification' in window ? Notification.permission : 'denied'))
 
     useEffect(() => {
@@ -71,7 +75,7 @@ function TopBar({ page, go, onBackup, onAccount, onSound }) {
                 </nav>
                 <div className="app-right">
                     {perm === 'default' && (
-                        <button className="btn sm" onClick={askPermission} title="Get system notifications for event reminders" aria-label="Enable alerts">
+                        <button className="btn sm app-desk" onClick={askPermission} title="Get system notifications for event reminders" aria-label="Enable alerts">
                             <span aria-hidden="true">🔔</span><span className="app-lbl"> Enable alerts</span>
                         </button>
                     )}
@@ -83,15 +87,37 @@ function TopBar({ page, go, onBackup, onAccount, onSound }) {
                         <i><b style={{ width: stats.level.pct + '%' }} /></i>
                     </span>
                     <AccountButton onClick={onAccount} />
-                    <button className="btn sm" onClick={onBackup} aria-label="Backup and restore" title={stale ? 'You have not backed up in over a week' : 'Backup and restore'}>
+                    <button className="btn sm app-desk" onClick={onBackup} aria-label="Backup and restore" title={stale ? 'You have not backed up in over a week' : 'Backup and restore'}>
                         <span aria-hidden="true">💾</span><span className="app-lbl"> Backup</span>{stale && <span className="app-dot" role="img" aria-label="Backup recommended" />}
                     </button>
-                    <SoundButton onClick={onSound} />
+                    <span className="app-desk"><SoundButton onClick={onSound} /></span>
+                    <button className="icon-btn app-desk" onClick={onSettings} aria-label="Settings" title="Settings">⚙️</button>
                     <button className="icon-btn app-railbtn" onClick={() => setUi({ ...ui, left: !ui.left })} aria-pressed={ui.left} aria-label="Toggle left sidebar" title="Toggle left sidebar">◧</button>
                     <button className="icon-btn app-railbtn" onClick={() => setUi({ ...ui, right: !ui.right })} aria-pressed={ui.right} aria-label="Toggle right sidebar" title="Toggle right sidebar">◨</button>
-                    <button className="icon-btn" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">◐</button>
+                    <button className="icon-btn app-desk" onClick={toggleTheme} aria-label="Switch theme" title="Switch theme">◐</button>
+                    <button className="icon-btn app-more" onClick={() => setMore(!more)} aria-label="More" aria-expanded={more} aria-haspopup="menu">
+                        ☰{stale && <span className="app-dot" aria-hidden="true" />}
+                    </button>
                 </div>
             </div>
+            {more && createPortal(
+                <>
+                    <div className="app-moreback" onClick={() => setMore(false)} />
+                    <div className="app-menu" role="menu">
+                        {[
+                            ['📋', 'Today and overview', onPanels],
+                            ['💾', stale ? 'Backup (overdue)' : 'Backup and restore', onBackup],
+                            [sound.on ? '🔊' : '🔇', sound.on ? 'Sound is on' : 'Sound is muted', onSound],
+                            ['⚙️', 'Settings and links', onSettings],
+                            ['🌓', 'Switch theme', toggleTheme],
+                            ...(perm === 'default' ? [['🔔', 'Enable alerts', askPermission]] : []),
+                        ].map(([icon, label, fn]) => (
+                            <button key={label} role="menuitem" onClick={() => { setMore(false); fn() }}><span aria-hidden="true">{icon}</span> {label}</button>
+                        ))}
+                    </div>
+                </>,
+                document.body,
+            )}
         </header>
     )
 }
@@ -285,12 +311,27 @@ function BackupModal({ onClose }) {
     )
 }
 
+/* ---------- Today and overview, for screens too small for the sidebars ---------- */
+function PanelsModal({ onClose }) {
+    return (
+        <div className="modal-back sheet-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+            <div className="modal sheet-modal" role="dialog" aria-label="Today and overview">
+                <div className="row"><h2 className="grow" style={{ margin: 0 }}>Today and overview</h2><button className="btn sm" onClick={onClose}>Close</button></div>
+                <LeftRail sheet />
+                <RightRail sheet />
+            </div>
+        </div>
+    )
+}
+
 /* ---------- App ---------- */
 export default function App() {
     const [page, setPage] = useState(fromHash)
     const [backup, setBackup] = useState(false)
     const [account, setAccount] = useState(false)
     const [soundOpen, setSoundOpen] = useState(false)
+    const [settingsOpen, setSettingsOpen] = useState(false)
+    const [panels, setPanels] = useState(false)
     const [ui] = useStore('ui', { left: true, right: true })
     // Ask the browser not to evict our data when disk space runs low
     useEffect(() => {
@@ -303,6 +344,13 @@ export default function App() {
         return () => window.removeEventListener('hashchange', onHash)
     }, [])
 
+    // The "Add your links" button in the sidebar asks for the settings page with this event
+    useEffect(() => {
+        const open = () => setSettingsOpen(true)
+        window.addEventListener(SETTINGS_EVENT, open)
+        return () => window.removeEventListener(SETTINGS_EVENT, open)
+    }, [])
+
     const go = id => {
         window.location.hash = '/' + id
         setPage(id)
@@ -313,7 +361,8 @@ export default function App() {
         <div className="app">
             <style>{GLOBAL_CSS}</style>
             <style>{CSS}</style>
-            <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} onSound={() => setSoundOpen(true)} />
+            <style>{RAIL_CSS}</style>
+            <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} onSound={() => setSoundOpen(true)} onSettings={() => setSettingsOpen(true)} onPanels={() => setPanels(true)} />
             <div className="app-shell">
                 {ui.left && page !== 'notes' && <LeftRail />}
                 <main>
@@ -327,6 +376,8 @@ export default function App() {
             {backup && <BackupModal onClose={() => setBackup(false)} />}
             {account && <AccountModal onClose={() => setAccount(false)} />}
             {soundOpen && <SoundModal onClose={() => setSoundOpen(false)} />}
+            {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+            {panels && <PanelsModal onClose={() => setPanels(false)} />}
             <CloudSync />
             <StudyPublisher />
             <Toasts />
@@ -340,50 +391,55 @@ const CSS = `
 .app-top{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--bg) 86%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--ln)}
 .app-top-in{max-width:1400px;margin:auto;padding:10px 20px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
 .app-brand{display:flex;align-items:center;gap:10px;font:700 19px var(--head);color:var(--tx);text-decoration:none}
-.app-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--ac);color:#fff}
+.app-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;box-shadow:0 4px 14px color-mix(in srgb,var(--ac) 40%,transparent)}
 .app-nav{display:flex;gap:4px;background:var(--sf2);border:1px solid var(--ln);border-radius:10px;padding:3px}
-.app-nav button{border:0;background:none;padding:6px 14px;border-radius:7px;cursor:pointer;color:var(--mu);font-weight:500}
+.app-nav button{border:0;background:none;padding:6px 14px;border-radius:7px;cursor:pointer;color:var(--mu);font-weight:500;transition:color .15s,background .15s}
 .app-nav button:hover{color:var(--tx)}
 .app-nav button.on{background:var(--sf);color:var(--tx);box-shadow:0 1px 3px rgba(0,0,0,.12)}
 .app-right{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;min-width:0}
-.app-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--ln);background:var(--sf);border-radius:999px;padding:3px 12px;font-weight:600;font-size:14px}
+.app-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--ln);background:var(--sf);border-radius:999px;padding:3px 12px;font-weight:600;font-size:14px;white-space:nowrap}
 .app-chip.lvl i{display:block;width:44px;height:6px;border-radius:6px;background:var(--ln);overflow:hidden}
-.app-chip.lvl b{display:block;height:100%;background:var(--ok);transition:width .5s}
+.app-chip.lvl b{display:block;height:100%;background:linear-gradient(90deg,var(--ok),color-mix(in srgb,var(--ok) 60%,#fff));transition:width .5s}
 .app-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wip);margin-left:6px}
 .flame-on{display:inline-block;animation:flicker 1.1s ease-in-out infinite}
-.app-railbtn{display:none}
+.app-cloud.synced{color:var(--ok)}.app-cloud.offline,.app-cloud.error{color:var(--wip)}.app-cloud.choose{color:var(--bad);border-color:var(--bad)}
+.app-railbtn,.app-more{display:none}
+.app-more{position:relative;font-size:20px;padding:2px 9px}
+.app-moreback{position:fixed;inset:0;z-index:65}
+.app-menu{position:fixed;z-index:70;top:54px;right:10px;width:min(280px,calc(100vw - 20px));background:var(--sf);border:1px solid var(--ln);border-radius:14px;box-shadow:0 16px 48px rgba(0,0,0,.35);padding:6px;display:grid;animation:rise .15s}
+.app-menu button{display:flex;gap:12px;align-items:center;border:0;background:none;text-align:left;padding:12px;border-radius:9px;cursor:pointer;font-size:15px;color:var(--tx)}
+.app-menu button:hover{background:var(--sf2)}
+.app-menu button span{width:24px;text-align:center;font-size:18px}
 .app-shell{display:flex;align-items:flex-start;max-width:1900px;margin:0 auto}
 .app-shell>main{flex:1;min-width:0}
 .rail{display:none;flex:none;width:260px;gap:14px;align-content:start;position:sticky;top:70px;max-height:calc(100vh - 78px);overflow:auto;padding:20px 0 20px 16px;scrollbar-width:thin}
 .rail.r{padding:20px 16px 20px 0}
 @media(min-width:1100px){.rail.l{display:grid}.app-railbtn{display:inline-block}}
 @media(min-width:1400px){.rail.r{display:grid}}
-.rail-card{padding:14px;display:grid;gap:10px}
-.rail-card h3{font-size:16px}
-.rail .bar{height:8px;border-radius:8px;background:var(--ln);overflow:hidden}
-.rail .bar i{display:block;height:100%;border-radius:8px;background:var(--ac);transition:width .5s}.rail .bar i.full{background:var(--ok)}
-.rail-todos,.rail-up{list-style:none;margin:0;padding:0;display:grid;gap:6px}
-.rail-todos li{display:flex;gap:8px;align-items:flex-start;overflow-wrap:anywhere}
-.rail-todos li.done span{text-decoration:line-through;color:var(--mu)}
-.rail-todos input{margin-top:3px;flex:none}
-.rail-add{display:grid;gap:6px}
-.rail textarea{min-height:90px}
-.rail-up li{display:grid}
-.rail-quote{margin:0;font:italic 500 14px/1.45 var(--head)}
+.sheet-back{align-items:end;padding:0}
+.sheet-modal{width:min(560px,100%);max-height:92vh;border-radius:18px 18px 0 0;display:grid;gap:14px;align-content:start}
+@media(max-width:900px){
+.app-desk{display:none!important}
+.app-more{display:inline-block}
+.app-nav{order:3;flex:1 1 100%}
+.app-nav button{flex:1}
+.app-top-in{gap:10px 12px}
+}
 @media(max-width:640px){
+.app-top{backdrop-filter:none;background:var(--bg)}
 .app-top-in{gap:8px;padding:8px 12px;flex-wrap:nowrap}
 .app-brand{font-size:17px;flex:none}
 .app-mark{width:30px;height:30px}
-.app-right{flex:1;gap:4px;flex-wrap:nowrap;overflow-x:auto;justify-content:flex-start;scrollbar-width:none}
-.app-right::-webkit-scrollbar{display:none}
-.app-right>*{flex:none}
+.app-right{flex:1;gap:6px;flex-wrap:nowrap}
 .app-lbl{display:none}
 .app-chip{padding:3px 8px}
-.app-nav{position:fixed;left:0;right:0;bottom:0;z-index:45;border-radius:0;border-width:1px 0 0;background:var(--sf);padding:4px 6px calc(4px + env(safe-area-inset-bottom));gap:2px}
+.app-nav{position:fixed;left:0;right:0;bottom:0;z-index:45;border-radius:0;border-width:1px 0 0;background:var(--sf);padding:4px 6px calc(4px + env(safe-area-inset-bottom));gap:2px;order:0;box-shadow:0 -6px 20px rgba(0,0,0,.12)}
 .app-nav button{flex:1;display:grid;justify-items:center;gap:1px;padding:6px 2px;font-size:11px;white-space:nowrap}
 .app-nav button>span{font-size:18px;line-height:1.2}
+.app-nav button.on{background:color-mix(in srgb,var(--ac) 14%,transparent);color:var(--ac);box-shadow:none}
 .app-shell>main{padding-bottom:68px}
 .toasts{bottom:76px}
+.app-menu{top:50px}
 }
-@media(max-width:380px){.app-chip.lvl i{display:none}.app-brand{font-size:0}}
+@media(max-width:420px){.app-brand{font-size:0}.app-chip.lvl i{display:none}}
 `

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { DAYS, TYPES, addDays, computeStats, dayIndex, getStore, hms, iso, notify, onStoreChange, parseISO, setStore, todayISO, useNow, useStats, useStore, weekStart } from './shared'
+import { DAYS, STUDY_DEFAULT, TYPES, addDays, computeStats, dayIndex, getStore, hms, isHttp, iso, notify, onStoreChange, parseISO, setStore, todayISO, uid as newId, useNow, useStats, useStore, weekStart } from './shared'
 import { DatabaseView, loadBlocks, snapshotBlock } from './Database'
 import { RoadmapView, loadRoadmaps, snapshotRoadmap } from './Roadmap'
+import { HeatGrid, HeatLegend } from './Heatmap'
 import * as fb from './firebase'
 import { useSyncState } from './sync'
 import { play } from './sound'
 
+/* eslint-disable react-refresh/only-export-components */
 /* ============================================================
    Study Group
    - you study with a timer, minutes are saved per day in the synced key "studygroup"
@@ -13,17 +15,18 @@ import { play } from './sound'
    - friends read the cards live; streaks and rankings are computed on each device
    ============================================================ */
 
-const STREAK_MIN = 30           // minutes of study that make a day count for the streak
+export const STREAK_MIN = 30           // minutes of study that make a day count for the streak
 const KEEP_DAYS = 120           // how many days of history go into your card
-const MAX_SESSION = 360         // a forgotten timer never adds more than 6 hours
+export const MAX_SESSION = 360         // a forgotten timer never adds more than 6 hours
 const ONLINE_MAX = 12 * 3600000 // "studying now" expires after 12 hours
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-const DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0, profile: {}, celebrated: {}, shared: [] }
 const EMPTY = []
 const PERIODS = { today: 'Today', week: 'This week', total: 'All time' }
 const TITLES = ['👑 Top of the pack', '🥈 Chasing the crown', '🥉 On the podium']
 const CHEERS = { clap: '👏', fire: '🔥', muscle: '💪' }
 const NUDGE = '👉'
+const HEAT_GROUP = [1, 60, 180, 360] // the same for the whole group, so the levels are higher
+const HEAT_MINUTES = [1, 30, 60, 120] // minutes of study where each green level of a friend's graph starts
 const COOLDOWN = 20000 // ms before you can cheer the same friend again
 // [key, label, hint, max length]
 const PROFILE_FIELDS = [
@@ -33,7 +36,6 @@ const PROFILE_FIELDS = [
     ['email', 'Email', 'name@example.com', 80],
     ['link', 'Link', 'github.com/you', 100],
 ]
-const isHttp = v => /^https?:\/\//i.test(v)
 
 // What it does: turns a picked image into a 96x96 square JPEG data URL (about 5 KB).
 // When to use it: for the profile photo. Firebase Storage needs a paid plan, so the photo lives inside your card.
@@ -75,7 +77,7 @@ function useFeed(watch, activeId, uid, empty) {
     }, [activeId, uid]) // eslint-disable-line react-hooks/exhaustive-deps
     return feed.id === activeId ? feed.value : empty
 }
-const fmtMin = m => {
+export const fmtMin = m => {
     const n = Math.round(m)
     return n >= 60 ? `${Math.floor(n / 60)}h ${n % 60}m` : `${n}m`
 }
@@ -83,7 +85,7 @@ const fmtMin = m => {
 // Minutes between two ISO dates, both included
 const sumDays = (days, from, to) => Object.entries(days).reduce((sum, [k, v]) => (k >= from && k <= to ? sum + v : sum), 0)
 
-function streakOf(days, today) {
+export function streakOf(days, today) {
     const ok = k => (days[k] || 0) >= STREAK_MIN
     let cursor = parseISO(today)
     if (!ok(iso(cursor))) cursor = addDays(cursor, -1) // today can still be saved
@@ -114,7 +116,7 @@ const planOf = week => {
 }
 
 function publish(user, ids) {
-    const s = getStore('studygroup', DEFAULT)
+    const s = getStore('studygroup', STUDY_DEFAULT)
     if (!user || !s.name) return
     const stamp = new Date()
     const cutoff = iso(addDays(stamp, -KEEP_DAYS))
@@ -139,26 +141,26 @@ function publish(user, ids) {
 }
 
 /* The running session is stored on this device only ("studyrun"), so a reload does not lose it */
-function startSession(user) {
+export function startSession(user) {
     if (getStore('studyrun', {}).start) return
     setStore('studyrun', { start: Date.now() }, {})
     play('studystart')
     publish(user)
 }
 
-function stopSession(user) {
+export function stopSession(user) {
     const start = getStore('studyrun', {}).start
     if (!start) return
     const minutes = Math.min(MAX_SESSION, Math.floor((Date.now() - start) / 60000))
     const today = todayISO()
-    const before = getStore('studygroup', DEFAULT).days[today] || 0
+    const before = getStore('studygroup', STUDY_DEFAULT).days[today] || 0
     setStore('studyrun', {}, {})
     if (minutes > 0) {
-        setStore('studygroup', cur => ({ ...cur, days: { ...cur.days, [today]: (cur.days[today] || 0) + minutes }, total: cur.total + minutes }), DEFAULT)
+        setStore('studygroup', cur => ({ ...cur, days: { ...cur.days, [today]: (cur.days[today] || 0) + minutes }, total: cur.total + minutes }), STUDY_DEFAULT)
     }
     play('studyend')
     if (before < STREAK_MIN && before + minutes >= STREAK_MIN) {
-        const { streak } = streakOf(getStore('studygroup', DEFAULT).days, today)
+        const { streak } = streakOf(getStore('studygroup', STUDY_DEFAULT).days, today)
         notify({ title: streak > 1 ? `${streak}-day study streak` : 'Study streak started', body: `${STREAK_MIN} minutes done today. Come back tomorrow!`, icon: '🔥' })
         play('streak')
     } else {
@@ -194,7 +196,7 @@ function shareToGroup(groupId, uid, id, kind, title, data) {
 }
 
 function refreshShares(user) {
-    const list = getStore('studygroup', DEFAULT).shared || []
+    const list = getStore('studygroup', STUDY_DEFAULT).shared || []
     if (!user || !list.length) return
     const blocks = loadBlocks()
     const roadmaps = loadRoadmaps()
@@ -384,6 +386,11 @@ function ProfileView({ r, isMe, cheerCount, onCheer, onClose }) {
                     <div><b>{r.best}</b><span> best study streak</span></div>
                     <div><b>💌 {cheerCount}</b><span> cheers</span></div>
                 </div>
+                <div className="sg-pheat">
+                    <b className="small">Study activity (minutes a day, last 18 weeks)</b>
+                    <HeatGrid counts={r.days} weeks={18} thresholds={HEAT_MINUTES} unit="minute" />
+                    <HeatLegend />
+                </div>
                 <div className="row" style={{ marginTop: 14 }}>
                     {!isMe && Object.entries(CHEERS).map(([k, e]) => <button key={k} className="btn" onClick={() => onCheer(r.uid, k)}>{e} Cheer {r.name}</button>)}
                     <span className="grow" /><button className="btn" onClick={onClose}>Close</button>
@@ -405,7 +412,7 @@ const parseShare = text => {
 
 /* Parent: StudyGroup opens this. Child: nothing. Lets you pick what to share. */
 function ShareModal({ groupName, uid, mine, onPut, onRemove, onClose }) {
-        const [items] = useState(() => {
+    const [items] = useState(() => {
         const roadmaps = loadRoadmaps()
         return [
             ...loadBlocks().map(b => ({
@@ -470,6 +477,55 @@ function ShareView({ share, ownerName, onClose }) {
     )
 }
 
+// Parent: StudyGroup. Plan a time to study together and see the sessions your friends planned.
+// "+ My calendar" copies a session into your own events, so it reminds you like any other event.
+function Sessions({ list, uid, isOwner, members, onPlan, onDrop, onCopy }) {
+    const [title, setTitle] = useState('')
+    const [date, setDate] = useState(todayISO())
+    const [time, setTime] = useState('20:00')
+    const today = todayISO()
+    const upcoming = list.filter(x => x.date >= today).sort((a, b) => `${a.date} ${a.time || ''}`.localeCompare(`${b.date} ${b.time || ''}`)).slice(0, 8)
+
+    const submit = e => {
+        e.preventDefault()
+        const v = title.trim()
+        if (!v || !date) return
+        onPlan(v.slice(0, 60), date, time)
+        setTitle('')
+    }
+
+    return (
+        <>
+            <div className="sg-sharehead">
+                <h3>Study sessions</h3>
+                <span className="muted small">Plan a time to study together</span>
+            </div>
+            <form className="sg-sform" onSubmit={submit}>
+                <input value={title} maxLength={60} onChange={e => setTitle(e.target.value)} placeholder="Mock interview, React night…" aria-label="Session title" />
+                <input type="date" value={date} min={today} onChange={e => setDate(e.target.value)} aria-label="Session date" />
+                <input type="time" value={time} onChange={e => setTime(e.target.value)} aria-label="Session time" />
+                <button className="btn primary" type="submit" disabled={!title.trim() || !date}>Plan</button>
+            </form>
+            {!upcoming.length && <p className="muted small" style={{ margin: 0 }}>No sessions planned yet. Pick a day and invite your friends to study with you.</p>}
+            <ul className="sg-shares">
+                {upcoming.map(x => {
+                    const who = members.find(m => m.uid === x.owner)
+                    return (
+                        <li key={x.id}>
+                            <div className="grow">
+                                <b>📅 {x.title}</b>
+                                <small className="muted">{parseISO(x.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}{x.date === today ? ' (today)' : ''} · {x.time || 'all day'} · by {x.owner === uid ? 'you' : who ? who.name : 'a friend'}</small>
+                            </div>
+                            <button className="btn sm" onClick={() => onCopy(x)}>+ My calendar</button>
+                            {(x.owner === uid || isOwner) && <button className="btn sm danger" onClick={() => onDrop(x.id)}>Remove</button>}
+                        </li>
+                    )
+                })}
+            </ul>
+        </>
+    )
+}
+
 function WeekPlan({ r, isMe, today, ws, onNudge }) {
     const plan = r.plan
     const all = plan ? Object.values(plan).flat() : []
@@ -519,8 +575,11 @@ function WeekPlan({ r, isMe, today, ws, onNudge }) {
     )
 }
 
-function WeekSummary({ rows, friday }) {
+function WeekSummary({ rows, friday, ws }) {
     const minutes = rows.reduce((n, r) => n + r.week, 0)
+    const prevFrom = iso(addDays(ws, -7))
+    const prevTo = iso(addDays(ws, -1))
+    const champ = [...rows].map(r => ({ name: r.name, min: sumDays(r.days, prevFrom, prevTo) })).sort((a, b) => b.min - a.min)[0]
     const all = rows.flatMap(r => (r.plan ? Object.values(r.plan).flat() : []))
     const done = all.filter(x => x.d).length
     const top = [...rows].sort((a, b) => b.week - a.week)[0]
@@ -530,6 +589,7 @@ function WeekSummary({ rows, friday }) {
             <span>⏱️ {fmtMin(minutes)} studied together</span>
             <span>✅ {done}/{all.length} todos done</span>
             {top && top.week > 0 && <span>👑 {top.name} leads with {fmtMin(top.week)}</span>}
+            {champ && champ.min > 0 && <span>🏆 Last week: {champ.name} with {fmtMin(champ.min)}</span>}
         </div>
     )
 }
@@ -543,7 +603,7 @@ export default function StudyGroup() {
     const stats = useStats()
     const user = sync.user
     const uid = user ? user.uid : ''
-    const [s, , update] = useStore('studygroup', DEFAULT)
+    const [s, , update] = useStore('studygroup', STUDY_DEFAULT)
     const [run] = useStore('studyrun', {})
     const now = useNow(1000)
     const [period, setPeriod] = useState('today')
@@ -558,14 +618,13 @@ export default function StudyGroup() {
     const seenShares = useRef(null)
     const [profileId, setProfileId] = useState(null)
     const seenCheers = useRef(null)
+    const seenSessions = useRef(null)
 
     const active = s.groups.find(g => g.id === s.active) || s.groups[0]
     const activeId = active ? active.id : ''
     const members = feed.id === activeId ? feed.list : EMPTY
     const shares = shareFeed.id === activeId ? shareFeed.list : EMPTY
 
-    // Live cards of the open group
-    
     // Shares made before auto-sync existed: register them so they stay up to date
     useEffect(() => {
         if (!user || shareFeed.id !== activeId) return
@@ -607,6 +666,7 @@ export default function StudyGroup() {
             play('add')
         })
     }, [shareFeed]) // eslint-disable-line react-hooks/exhaustive-deps
+    // Live cards of the open group
     useEffect(() => {
         if (!activeId || !uid) return
         let off = null
@@ -636,7 +696,7 @@ export default function StudyGroup() {
             const tp = m.todos || {}
             const mine = m.uid === uid
             return {
-                uid: m.uid, name: m.name || '?', on, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live,
+                uid: m.uid, name: m.name || '?', on, live, days, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live,
                 streak, best, todos: plannedToday, profile: m.profile || {},
                 plan: mine ? planOf(todos[ws]) : tp.week === ws ? tp.plan || {} : null, // your own plan is always live
                 appStreak: mine ? stats.streak : tp.streak || 0,
@@ -650,9 +710,15 @@ export default function StudyGroup() {
     const myRank = todayOrder.findIndex(r => r.uid === uid)
     const cheers = useFeed(fb.watchCheers, activeId, uid, EMPTY)
     const group = useFeed(fb.watchGroup, activeId, uid, null)
+    const sessions = useFeed(fb.watchGroupEvents, activeId, uid, EMPTY)
     const goal = (group && group.goal) || 0
     const isOwner = Boolean(group) && group.owner === uid
     const weekTotal = rows.reduce((n, r) => n + r.week, 0)
+    const groupDays = useMemo(() => {
+        const out = {}
+        members.forEach(m => Object.entries(m.days || {}).forEach(([k, v]) => { out[k] = (out[k] || 0) + v }))
+        return out
+    }, [members])
 
     // A friend cheers you
     useEffect(() => {
@@ -671,6 +737,22 @@ export default function StudyGroup() {
             play('cheer')
         })
     }, [cheers]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    // A friend plans a study session. Your own sessions from over a month ago are removed.
+    useEffect(() => {
+        if (sessions === EMPTY) return
+        const before = seenSessions.current
+        seenSessions.current = { id: activeId, ids: new Set(sessions.map(x => x.id)) }
+        const old = iso(addDays(new Date(), -30))
+        sessions.filter(x => x.owner === uid && x.date < old).forEach(x => fb.deleteGroupEvent(activeId, x.id).catch(() => {}))
+        if (!before || before.id !== activeId) return
+        sessions.forEach(x => {
+            if (x.owner === uid || before.ids.has(x.id)) return
+            const who = members.find(m => m.uid === x.owner)
+            notify({ title: `${who ? who.name : 'A friend'} planned a session`, body: `${x.title} · ${x.date}${x.time ? ' ' + x.time : ''}`, icon: '📅' })
+            play('add')
+        })
+    }, [sessions]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // The group reaches its weekly goal (celebrated once per group and week)
     useEffect(() => {
@@ -780,6 +862,13 @@ export default function StudyGroup() {
         if (!Number.isFinite(hours) || hours < 0 || hours > 1000) return notify({ title: 'Enter a number of hours', body: 'For example 20.', icon: '🔢' })
         fb.setGroupGoal(activeId, Math.round(hours * 60)).then(() => play('save')).catch(fail)
     }
+    const planSession = (title, date, time) => fb.saveGroupEvent(activeId, `${uid}_${newId()}`, { owner: uid, title, date, time, at: Date.now() }).then(() => play('save')).catch(fail)
+    const dropSession = id => fb.deleteGroupEvent(activeId, id).then(() => play('delete')).catch(fail)
+    const copySession = x => {
+        setStore('events', cur => (cur.some(e => e.id === 'g_' + x.id) ? cur : [...cur, { id: 'g_' + x.id, title: `👥 ${x.title}`, date: x.date, time: x.time || '', remind: x.time ? 15 : 0, color: '#3ddc97', notes: active.name }]), [])
+        play('add')
+        notify({ title: 'Added to your calendar', body: x.title, icon: '📅' })
+    }
     const putShare = (id, kind, title, data) => {
     shareToGroup(activeId, uid, id, kind, title, data)
     update(d => {
@@ -872,6 +961,14 @@ const removeShare = id => {
                         </div>
                     </div>
                     <p className="sg-coach">{coach}</p>
+                    {rows.some(r => r.on) && (
+                        <div className="sg-live" aria-label="Studying now">
+                            <span className="sg-pulse" aria-hidden="true" />
+                            {rows.filter(r => r.on).map(r => (
+                                <button key={r.uid} className="sg-chip" onClick={() => setProfileId(r.uid)}><Avatar name={r.name} photo={r.profile.photo} size={20} /> {r.uid === uid ? 'You' : r.name} · {fmtMin(r.live)}</button>
+                            ))}
+                        </div>
+                    )}
                     <div className="sg-goalbox">
                         <div className="row">
                             <b>Weekly group goal</b>
@@ -916,10 +1013,17 @@ const removeShare = id => {
                     </ol>
                     {!order.length && <p className="muted small">Loading the group…</p>}
                     <div className="sg-sharehead">
+                        <h3>Group activity</h3>
+                        <span className="muted small">Minutes studied together, last 18 weeks</span>
+                    </div>
+                    <HeatGrid counts={groupDays} weeks={18} thresholds={HEAT_GROUP} unit="minute" />
+                    <HeatLegend />
+                    <Sessions list={sessions} uid={uid} isOwner={isOwner} members={members} onPlan={planSession} onDrop={dropSession} onCopy={copySession} />
+                    <div className="sg-sharehead">
                         <h3>This week's plans</h3>
                         <span className="muted small">Saturday to Friday. Friends see your todo text.</span>
                     </div>
-                    <WeekSummary rows={rows} friday={dayIndex(now) === 6} />
+                    <WeekSummary rows={rows} friday={dayIndex(now) === 6} ws={weekStartDate} />
                     <div className="sg-plans">
                         {order.map(r => <WeekPlan key={r.uid} r={r} isMe={r.uid === uid} today={dayIndex(now)} ws={weekStartDate} onNudge={uid2 => sendCheer(uid2, 'nudge')} />)}
                     </div>
@@ -970,22 +1074,13 @@ const CSS = `
 .sg-code{font-family:ui-monospace,monospace;letter-spacing:.12em;user-select:all}
 .sg-coach{margin:0;padding:12px 14px;border-radius:10px;background:color-mix(in srgb,var(--ac) 12%,var(--sf2));border:1px solid var(--ln);font-weight:500}
 .sg-list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
-.sg-row{display:flex;gap:12px;align-items:center;background:var(--sf2);border:1px solid var(--ln);border-radius:10px;padding:10px 12px}
-.sg-row.me{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
-.sg-row .grow{display:grid;min-width:0}
-.sg-rank{width:26px;text-align:center;font:700 18px var(--head);color:var(--mu)}
 .sg-avatar{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:var(--ac);color:#fff;font-weight:700;flex:none}
-.sg-streak{font-weight:600;white-space:nowrap}.sg-min{font-variant-numeric:tabular-nums;min-width:64px;text-align:right}
 @media(max-width:640px){.sg-timer{grid-template-columns:1fr}.sg-clock{font-size:44px}}
 .sg-sharehead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;border-top:1px solid var(--ln);padding-top:14px}
 .sg-sharehead h3{font-size:18px}
 .sg-shares{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .sg-shares li{display:flex;gap:10px;align-items:center;background:var(--sf2);border:1px solid var(--ln);border-radius:10px;padding:8px 12px}
 .sg-shares .grow{display:grid;min-width:0}
-.sg-view{width:min(620px,100%)}
-.sg-items{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:12px}
-.sg-items details{margin-top:6px;font-size:14px}
-.sg-items details ul{margin:6px 0 0;padding-left:20px;display:grid;gap:3px}
 .sg-full{position:fixed;inset:0;z-index:60;background:var(--bg);overflow:auto}
 .sg-fullbar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--ln)}
 .sg-fulltitle{display:grid;min-width:0}
@@ -1001,8 +1096,6 @@ const CSS = `
 .sg-chips{display:flex;gap:6px;flex-wrap:wrap}
 .sg-chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--ln);background:var(--sf);border-radius:999px;padding:1px 9px;font-size:13px;font-weight:600;white-space:nowrap}
 .sg-meter{display:grid;gap:4px;text-align:right}.sg-meter b{font-variant-numeric:tabular-nums}
-.sg .bar{height:8px;border-radius:8px;background:var(--ln);overflow:hidden}
-.sg .bar i{display:block;height:100%;border-radius:8px;background:var(--ac);transition:width .5s}.sg .bar i.full{background:var(--ok)}
 .sg-plans{display:grid;gap:12px}
 .sg-plan{border:1px solid var(--ln);border-radius:10px;background:var(--sf2);padding:12px 14px;display:grid;gap:8px}
 .sg-plan.me{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
@@ -1035,4 +1128,12 @@ const CSS = `
 .sg-pstats>div{border:1px solid var(--ln);background:var(--sf2);border-radius:10px;padding:8px 10px;display:grid}
 .sg-pstats b{font:700 18px var(--head)}.sg-pstats span{color:var(--mu);font-size:12px}
 @media(max-width:640px){.sg{padding:16px 12px 90px}.sg-board{padding:14px}.sgw-grid{grid-template-columns:1fr}.sgw-col{min-height:0}}
+.sg-live{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 12px;border-radius:10px;border:1px solid var(--ok);background:color-mix(in srgb,var(--ok) 8%,var(--sf2))}
+.sg-live .sg-chip{cursor:pointer;color:var(--tx)}.sg-live .sg-avatar{font-size:10px}
+.sg-pulse{width:10px;height:10px;border-radius:50%;background:var(--ok);animation:glow 1.4s ease-in-out infinite}
+.sg-pheat{display:grid;gap:6px;margin-top:12px}
+.sg-sform{display:grid;grid-template-columns:minmax(0,1fr) 150px 110px auto;gap:6px}
+@media(max-width:640px){.sg-sform{grid-template-columns:1fr 1fr}.sg-sform input:first-child{grid-column:1/-1}}
+.sg-row,.sg-plan,.sg-shares li{animation:rise .3s both}
+.sg-coach{background:linear-gradient(135deg,color-mix(in srgb,var(--ac) 14%,var(--sf2)),color-mix(in srgb,var(--ok) 8%,var(--sf2)))}
 `

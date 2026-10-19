@@ -85,6 +85,28 @@ service cloud.firestore {
         allow delete: if request.auth != null && resource.data.owner == request.auth.uid;
       }
 
+      // A study session planned for the whole group. The author or the group owner can remove it.
+      match /events/{eventId} {
+        allow read: if request.auth != null
+          && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
+        allow create, update: if request.auth != null
+          && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid))
+          && eventId.matches(request.auth.uid + '_.*')
+          && request.resource.data.keys().hasOnly(['owner', 'title', 'date', 'time', 'at'])
+          && request.resource.data.owner == request.auth.uid
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 60
+          && request.resource.data.date is string
+          && request.resource.data.date.size() == 10
+          && request.resource.data.time is string
+          && request.resource.data.time.size() <= 5
+          && request.resource.data.at is number;
+        allow delete: if request.auth != null
+          && (resource.data.owner == request.auth.uid
+            || get(/databases/$(database)/documents/groups/$(code)).data.owner == request.auth.uid);
+      }
+
       // One document per (sender, receiver) pair. A new cheer overwrites the old one and raises the counter.
       match /cheers/{cheerId} {
         allow read: if request.auth != null

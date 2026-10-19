@@ -48,3 +48,25 @@ export function toggleTodo(key, day, id, el) {
     }
     if (reachedGoal) notify({ title: 'Daily goal reached', body: `${goal} todos done today.`, icon: '🎯' })
 }
+export const EVENT_COLORS = ['#7c6cff', '#3ddc97', '#ffb454', '#ff6b8b', '#4cc9f0', '#a3a3b8']
+
+// Delete an event, forget its reminders, and offer Undo for a few seconds
+export function removeEvent(ev) {
+    const original = getStore('events', []).find(x => x.id === ev.id)
+    if (!original) return
+    setStore('events', cur => cur.filter(x => x.id !== ev.id), [])
+    setStore('fired', cur => Object.fromEntries(Object.entries(cur).filter(([k]) => !k.startsWith(ev.id + '|'))), {})
+    play('delete')
+    notify({
+        title: 'Event deleted',
+        body: original.title || 'Untitled event',
+        icon: '🗑️',
+        actions: [{
+            label: 'Undo',
+            onClick: () => {
+                setStore('events', cur => (cur.some(x => x.id === original.id) ? cur : [...cur, original]), [])
+                play('undo')
+            },
+        }],
+    })
+}

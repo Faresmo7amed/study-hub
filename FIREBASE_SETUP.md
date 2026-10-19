@@ -48,3 +48,5 @@ Copy `firestore.rules` and `.env.example` to the root of the project (next to `p
 
 ## If you already published the rules earlier
 The multiple-roadmaps update added one new synced key, `roadmaps`. Open **Firestore Database → Rules**, replace the text with the current `firestore.rules`, and click **Publish** again. Until you do, saving roadmaps to the cloud is refused with "permission denied".
+
+The study sessions update added one more group collection, `events`. Publish the current `firestore.rules` again, or planning a study session is refused with "permission denied".

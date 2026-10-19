@@ -285,7 +285,7 @@ function NoteCard({ note, labels, onOpen, onChange, onNewLabel, actions }) {
     )
 }
 
-function LabelsModal({ labels, setLabels, notes, updateNotes, onClose }) {
+function LabelsModal({ labels, setLabels, updateNotes, onClose }) {
     const [name, setName] = useState('')
     const add = e => {
         e.preventDefault()
@@ -480,7 +480,7 @@ export default function Notes() {
                     </div>
                 </div>
             )}
-            {showLabels && <LabelsModal labels={labels} setLabels={setLabels} notes={notes} updateNotes={updateNotes} onClose={() => setShowLabels(false)} />}
+            {showLabels && <LabelsModal labels={labels} setLabels={setLabels} updateNotes={updateNotes} onClose={() => setShowLabels(false)} />}
         </div>
     )
 }

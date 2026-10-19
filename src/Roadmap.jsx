@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { addTodoToday, confetti, getStore, isStored, notify, uid, useStore } from './shared'
+import { createPortal } from 'react-dom'
+import { addTodoToday, confetti, getStore, isStored, notify, setStore, uid, useStore } from './shared'
 import { play } from './sound'
 import { Icon, IconPicker } from './Icons'
 import { cleanIcon } from './iconUtils'
@@ -29,6 +30,8 @@ const norm = (t, top = true) => {
     if (!PR[o.priority]) o.priority = 'rec'
     if (!STATUS[o.status]) o.status = 'todo'
     if (typeof o.ref !== 'string' || !o.ref) o.ref = null // id of another roadmap this item points to
+    // A subtopic can mirror a topic of another roadmap: its status follows (and writes to) that topic
+    o.mirror = top || !t.mirror || typeof t.mirror.map !== 'string' || typeof t.mirror.topic !== 'string' ? null : { map: t.mirror.map, topic: t.mirror.topic }
     o.est = Math.max(0, Number(t.est) || 0)
     o.icon = cleanIcon(t.icon)
     return o
@@ -122,9 +125,18 @@ const hoursLeft = (topics, st) => topics.reduce((n, t) => {
 }, 0)
 /*
   Linked roadmaps: an item with a "ref" is done when every topic and subtopic of that roadmap is done.
+  A subtopic with a "mirror" copies the status of one topic of another roadmap (and writes to it when you tick it).
   "chain" lists the roadmaps we are already inside, so a loop (A -> B -> A) can never run forever.
 */
+const mirrorTarget = (t, maps) => (t.mirror && maps[t.mirror.map] ? maps[t.mirror.map].topics.find(x => x.id === t.mirror.topic) || null : null)
+
 function effStatus(t, maps, chain = []) {
+    const mirrored = mirrorTarget(t, maps)
+    if (mirrored && !chain.includes(t.mirror.map)) {
+        const next = [...chain, t.mirror.map]
+        const s = effStatus(mirrored, maps, next)
+        return s === 'done' ? 'done' : s === 'doing' || prog(mirrored, maps, next) > 0 ? 'doing' : 'todo'
+    }
     if (!t.ref || !maps[t.ref] || chain.includes(t.ref)) return t.status
     const p = mapProgress(maps[t.ref], maps, [...chain, t.ref])
     return p.total && p.done === p.total ? 'done' : p.done > 0 ? 'doing' : 'todo'
@@ -141,21 +153,35 @@ function reaches(maps, from, target, seen = new Set()) {
     seen.add(from)
     return itemsOf(maps[from]).some(i => i.ref && reaches(maps, i.ref, target, seen))
 }
-const prog = (t, maps) => {
+const prog = (t, maps, chain = []) => {
     if (typeof t.pct === 'number') return t.pct // a shared snapshot carries the finished number
-    if (t.ref && maps[t.ref]) return mapProgress(maps[t.ref], maps).pct
-    const u = [...t.steps, ...t.subs.map(s => ({ done: effStatus(s, maps) === 'done' }))]
-    return u.length ? Math.round((100 * u.filter(x => x.done).length) / u.length) : effStatus(t, maps) === 'done' ? 100 : 0
+    const m = mirrorTarget(t, maps)
+    if (m && !chain.includes(t.mirror.map)) return prog(m, maps, [...chain, t.mirror.map])
+    if (t.ref && maps[t.ref] && !chain.includes(t.ref)) return mapProgress(maps[t.ref], maps, [...chain, t.ref]).pct
+    const u = [...t.steps, ...t.subs.map(s => ({ done: effStatus(s, maps, chain) === 'done' }))]
+    return u.length ? Math.round((100 * u.filter(x => x.done).length) / u.length) : effStatus(t, maps, chain) === 'done' ? 100 : 0
 }
 const reid = x => {
     if (!x || typeof x !== 'object') return
     if (x.id) x.id = uid()
     Object.values(x).forEach(reid)
 }
+/* eslint-disable react-refresh/only-export-components */
 // What it does: returns the user's roadmaps, even if they were never saved yet.
-// eslint-disable-next-line react-refresh/only-export-components
 export const loadRoadmaps = () => getStore('roadmaps', initialStore)
-// eslint-disable-next-line react-refresh/only-export-components
+
+// What it does: lists every roadmap with its progress (id, title, done, total, pct).
+// When to use it: for small summaries, like the sidebar card.
+export const roadmapList = store => store.order.filter(id => store.maps[id]).map(id => ({ id, title: store.maps[id].title || 'Untitled roadmap', ...mapProgress(store.maps[id], store.maps) }))
+
+// What it does: makes a roadmap the open one and goes to the Roadmap page.
+// When to use it: from a link in another page.
+export function openRoadmap(id) {
+    setStore('roadmaps', cur => (cur.maps[id] ? { ...cur, active: id } : cur), loadRoadmaps)
+    window.location.hash = '/roadmap'
+}
+
+// What it does: finds the first unfinished mandatory item (or any unfinished item) of the open roadmap.
 export function nextUp(store) {
     const m = store.maps[store.active] || store.maps[store.order[0]]
     if (!m) return null
@@ -163,25 +189,22 @@ export function nextUp(store) {
     const t = left.find(x => x.priority === 'must') || left[0]
     return t ? { title: t.title || 'Untitled', icon: t.icon || '', roadmap: m.title, pct: mapProgress(m, store.maps).pct } : null
 }
-// What it does: turns one roadmap into plain data for friends (titles, status, priority, progress).
-// Linked roadmaps are already counted in the status and percentages. Notes and resources stay private.
-// eslint-disable-next-line react-refresh/only-export-components
 // What it does: turns one roadmap into plain data for friends. Linked roadmaps are already counted in
 // the status and percentages. Notes, resources, checklist text and projects stay private.
 // When to use it: when sharing a roadmap with a group.
-// eslint-disable-next-line react-refresh/only-export-components
 export function snapshotRoadmap(store, id) {
     const maps = store.maps
     const m = maps[id]
     const item = (t, top) => ({
         id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40), est: t.est || 0, icon: t.icon && t.icon.length <= 6000 ? t.icon : '',
-        priority: t.priority, status: effStatus(t, maps), pct: prog(t, maps), ref: null,
+        priority: t.priority, status: effStatus(t, maps), pct: prog(t, maps), ref: null, mirror: null,
         subs: top ? t.subs.map(s => item(s, false)) : [],
         gate: top && t.gate ? { name: t.gate.name, desc: t.gate.desc, highlight: t.gate.highlight, done: t.gate.done } : null,
     })
     const colors = { ...DEFAULT_COLORS, ...(getStore('settings', {}).roadmapColors || {}) }
     return { v: 2, roadmap: { id: m.id, title: m.title, colors, topics: m.topics.map(t => item(t, true)) } }
 }
+/* eslint-enable react-refresh/only-export-components */
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const md = s => esc(s || '')
     .split('\n')
@@ -197,25 +220,107 @@ const svgEl = (tag, attrs) => {
     return n
 }
 
+/* ---------- connector lines ---------- */
+// What it does: draws the lines between the squares from their real position on screen. The main line fills
+// with colour when a topic (and its gate) is done. Lines are drawn again after every render and every resize.
+// When to use it: in any page that shows a roadmap map. It returns the refs to attach to the map, the rows and the two SVG layers.
+function useConnectors(data, st, hideSubs = false) {
+    const mapRef = useRef(null)
+    const rowsRef = useRef(null)
+    const mainSvg = useRef(null)
+    const subSvg = useRef(null)
+    const drawRef = useRef(null)
+
+    useLayoutEffect(() => {
+        const draw = () => {
+            const map = mapRef.current
+            const svg = mainSvg.current
+            const ls = subSvg.current
+            if (!map || !svg || !ls) return
+            const m = map.getBoundingClientRect()
+            const cells = [...map.querySelectorAll('.rm-cell')]
+            const mobile = window.innerWidth < 700
+            const want = Math.max(0, cells.length - 1)
+            if (svg.children.length !== want * 2) {
+                svg.replaceChildren()
+                for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
+            }
+            cells.slice(0, -1).forEach((cell, i) => {
+                const A = cell.getBoundingClientRect()
+                const R = cell.parentNode.getBoundingClientRect()
+                const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
+                const x1 = A.left + A.width / 2 - m.left
+                const y0 = (mobile ? R.bottom : A.bottom) - m.top
+                const y1 = R.bottom - m.top
+                const x2 = B.left + B.width / 2 - m.left
+                const y2 = B.top - m.top
+                const d = Math.max(30, (y2 - y1) * 0.6)
+                const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
+                const t = data.topics[i]
+                svg.children[2 * i].setAttribute('d', D)
+                svg.children[2 * i + 1].setAttribute('d', D)
+                svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
+            })
+            ls.replaceChildren()
+            if (hideSubs || mobile) return
+            data.topics.forEach(t => {
+                const row = document.getElementById('rm-r-' + t.id)
+                if (!row) return
+                const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
+                const toRight = row.classList.contains('l')
+                t.subs.forEach(s => {
+                    const el = document.getElementById('rm-n-' + s.id)
+                    if (!el) return
+                    const e = el.getBoundingClientRect()
+                    const xs = (toRight ? box.right : box.left) - m.left
+                    const xe = (toRight ? e.left : e.right) - m.left
+                    const ys = box.top + box.height / 2 - m.top
+                    const ye = e.top + e.height / 2 - m.top
+                    ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
+                })
+            })
+        }
+        drawRef.current = draw
+        draw()
+    })
+
+    useEffect(() => {
+        const redraw = () => drawRef.current()
+        const ro = new ResizeObserver(redraw)
+        if (rowsRef.current) ro.observe(rowsRef.current)
+        window.addEventListener('resize', redraw)
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw)
+        return () => {
+            ro.disconnect()
+            window.removeEventListener('resize', redraw)
+        }
+    }, [])
+
+    return { mapRef, rowsRef, mainSvg, subSvg }
+}
+
 /* ---------- map pieces ---------- */
 function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }) {
     const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
+    const mirrored = !linked && t.mirror && maps[t.mirror.map] ? maps[t.mirror.map] : null
+    const goto = linked || mirrored
     const status = effStatus(t, maps)
     return (
-        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${linked ? ' linked' : ''}`} onDragOver={e => { if (onMoveTo) e.preventDefault() }}
-onDrop={e => { if (!onMoveTo) return; e.preventDefault(); onMoveTo(e.dataTransfer.getData('text/plain'), t.id) }}>
+        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${goto ? ' linked' : ''}`}
+            onDragOver={e => { if (onMoveTo) e.preventDefault() }}
+            onDrop={e => { if (!onMoveTo) return; e.preventDefault(); onMoveTo(e.dataTransfer.getData('text/plain'), t.id) }}>
             {onMoveTo && <span className="rm-drag" draggable onDragStart={e => e.dataTransfer.setData('text/plain', t.id)} title="Drag to reorder" aria-hidden="true">⠿</span>}
             <button className="rm-chk" disabled={!!linked || readOnly}
                 title={linked ? 'Done automatically when the linked roadmap is finished' : status === 'done' ? 'Mark as not done' : 'Mark as done'}
                 aria-label={`Toggle ${t.title || 'item'} done`} aria-pressed={status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
-            {linked && <button className="rm-go" onClick={() => onGoRef(linked.id)} title={`Open the ${linked.title} roadmap`} aria-label={`Open the ${linked.title} roadmap`}>↗</button>}
+            {goto && <button className="rm-go" onClick={() => onGoRef(goto.id)} title={`Open the ${goto.title} roadmap`} aria-label={`Open the ${goto.title} roadmap`}>↗</button>}
             <button className="rm-body" onClick={() => onOpen(t.id)}>
                 <b>{n ? n + '. ' : ''}{t.icon && <span className="rm-ic"><Icon value={t.icon} size={n ? 18 : 15} /></span>}{t.title || 'Untitled'}</b>
                 {n && (t.when || t.est > 0) && <em>{[t.when, t.est > 0 && `${t.est} h`].filter(Boolean).join(' · ')}</em>}
                 {n && t.desc && <small>{t.desc}</small>}
-                {linked && <span className="rm-ref">↗ {linked.title}</span>}
+                {goto && <span className="rm-ref">↗ {goto.title}</span>}
                 <span className="rm-pr">{PR[t.priority]}</span>
-                {(n || linked) && <span className="rm-bar"><i style={{ width: prog(t, maps) + '%' }} /></span>}
+                {(n || goto) && <span className="rm-bar"><i style={{ width: prog(t, maps) + '%' }} /></span>}
             </button>
         </div>
     )
@@ -271,11 +376,12 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
 
     const topText = (key, ph, extra) => <input type="text" value={t[key] || ''} placeholder={ph} aria-label={ph} onChange={e => api.patch(t.id, { [key]: e.target.value })} {...extra} />
     const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
+    const mirrored = !linked && t.mirror && maps[t.mirror.map] ? maps[t.mirror.map] : null
     const seg = (label, opts, key, disabled) => (
         <div>
             <div className="rm-lb">{label}</div>
             <div className="row">
-                {Object.entries(opts).map(([v, l]) => <button key={v} disabled={disabled} className={'btn sm' + ((key === 'status' ? effStatus(t, maps) : t[key]) === v ? ' on' : '')} onClick={() => api.patch(t.id, { [key]: v })}>{l}</button>)}
+                {Object.entries(opts).map(([v, l]) => <button key={v} disabled={disabled} className={'btn sm' + ((key === 'status' ? effStatus(t, maps) : t[key]) === v ? ' on' : '')} onClick={() => (key === 'status' ? api.setStatus(t, v) : api.patch(t.id, { [key]: v }))}>{l}</button>)}
             </div>
         </div>
     )
@@ -320,7 +426,13 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                         return <option key={id} value={id} disabled={loops}>{maps[id].title || 'Untitled roadmap'}{loops ? ' (would loop back here)' : ''}</option>
                     })}
                 </select>
-                {!t.ref && <button className="btn sm" style={{ marginTop: 8 }} onClick={() => api.makeRoadmap(t.id)}>Create its own roadmap</button>}
+                {!t.ref && <button className="btn sm" style={{ marginTop: 8 }} onClick={() => api.makeRoadmap(t.id)} title="Makes a new roadmap from this item. Progress you make there shows up here.">Create its own roadmap</button>}
+                {mirrored && (
+                    <div className="rm-linkbox">
+                        <p className="small" style={{ margin: 0 }}>This subtopic follows a topic of <b>{mirrored.title}</b>. Tick it here or there, it is the same progress.</p>
+                        <div className="row"><button className="btn sm" onClick={() => onOpenRoadmap(mirrored.id)}>Open roadmap →</button></div>
+                    </div>
+                )}
                 {linked && (() => {
                     const p = mapProgress(linked, maps)
                     return (
@@ -365,7 +477,7 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                     <h3>Subtopics</h3>
                     {t.subs.map(x => (
                         <Row key={x.id} id={x.id} onRemove={() => api.removeIn(t.id, 'subs', x.id)}>
-                            <input type="checkbox" checked={effStatus(x, maps) === 'done'} disabled={!!(x.ref && maps[x.ref])} title={x.ref && maps[x.ref] ? 'Follows the linked roadmap' : undefined} aria-label="Done" onChange={e => { api.patchItem(t.id, 'status', x, e.target.checked ? 'done' : 'todo', 'subs'); play(e.target.checked ? 'check' : 'uncheck') }} />
+                            <input type="checkbox" checked={effStatus(x, maps) === 'done'} disabled={!!(x.ref && maps[x.ref])} title={x.ref && maps[x.ref] ? 'Follows the linked roadmap' : undefined} aria-label="Done" onChange={e => { api.setStatus(x, e.target.checked ? 'done' : 'todo'); play(e.target.checked ? 'check' : 'uncheck') }} />
                             <div className="col">
                                 <input type="text" value={x.title} placeholder="Subtopic title" aria-label="Subtopic title" onChange={e => api.patchItem(t.id, 'title', x, e.target.value, 'subs')} />
                                 <select value={x.priority} aria-label="Priority" onChange={e => api.patchItem(t.id, 'priority', x, e.target.value, 'subs')}>
@@ -571,14 +683,10 @@ export default function Roadmap() {
     const [backup, setBackup] = useState(false)
     const [creating, setCreating] = useState(false)
     const [colorsOpen, setColorsOpen] = useState(false)
-    const [menu, setMenu] = useState(false)
+    const [menu, setMenu] = useState(null) // null when closed, otherwise where the menu opens
     const [armed, setArmed] = useState(false)
     const [trail, setTrail] = useState([]) // roadmaps we came from when following a link
-    const mapRef = useRef(null)
-    const rowsRef = useRef(null)
-    const mainSvg = useRef(null)
-    const subSvg = useRef(null)
-    const drawRef = useRef(null)
+    const menuBtn = useRef(null)
     const prevPct = useRef(null)
 
     const maps = store.maps
@@ -624,17 +732,42 @@ export default function Roadmap() {
             })
             play('tick')
         },
+        // Change the status of an item. A mirrored subtopic writes to the topic it follows, so both roadmaps agree.
+        setStatus: (item, status) => updateStore(d => {
+            const target = item.mirror && d.maps[item.mirror.map] && d.maps[item.mirror.map].topics.find(x => x.id === item.mirror.topic)
+            const own = d.maps[activeId] && locate(d.maps[activeId], item.id)
+            const h = target ? { t: target } : own
+            if (h) h.t.status = status
+        }),
+        // Turns an item into its own roadmap. Its subtopics become the topics of the new roadmap and stay
+        // connected: ticking one in either roadmap ticks it in both, and the item shows the new roadmap's progress.
         makeRoadmap: id => {
             const h = locate(data, id)
             if (!h) return
             const newId = uid()
-            const seed = h.t.subs.map(s => ({ ...JSON.parse(JSON.stringify(s)), subs: [] }))
-            reid(seed)
+            const pairs = []
+            const seed = h.t.subs.map(sub => {
+                const copy = JSON.parse(JSON.stringify(sub))
+                copy.subs = []
+                copy.mirror = null
+                reid(copy)
+                pairs.push([sub.id, copy.id])
+                return copy
+            })
             updateStore(d => {
                 d.maps[newId] = normMap({ id: newId, title: h.t.title || 'New roadmap', topics: seed })
                 d.order.push(newId)
                 const x = d.maps[activeId] && locate(d.maps[activeId], id)
-                if (x) x.t.ref = newId
+                if (x) {
+                    x.t.ref = newId
+                    pairs.forEach(([subId, topicId]) => {
+                        const sub = x.t.subs.find(y => y.id === subId)
+                        if (sub) {
+                            sub.mirror = { map: newId, topic: topicId }
+                            sub.ref = null
+                        }
+                    })
+                }
                 d.active = newId
             })
             setTrail(tr => [...tr, activeId])
@@ -701,7 +834,7 @@ export default function Roadmap() {
     const toggleDone = (t, el) => {
         if (t.ref && maps[t.ref]) return
         const done = st(t) !== 'done'
-        api.patch(t.id, { status: done ? 'done' : 'todo' })
+        api.setStatus(t, done ? 'done' : 'todo')
         const isTopic = data.topics.some(x => x.id === t.id)
         play(done ? (isTopic ? 'complete' : 'check') : 'uncheck')
         if (done && el) {
@@ -738,7 +871,7 @@ export default function Roadmap() {
         setSel(null)
         setQuery('')
         setPf(null)
-        setMenu(false)
+        setMenu(null)
         window.scrollTo({ top: 0, behavior: 'smooth' })
     }
     const goBack = () => {
@@ -760,7 +893,7 @@ export default function Roadmap() {
         setCreating(false)
         setTrail([])
         setSel(null)
-        setMenu(false)
+        setMenu(null)
         play('save')
     }
     const deleteRoadmap = () => {
@@ -770,12 +903,15 @@ export default function Roadmap() {
             delete d.maps[id]
             d.order = d.order.filter(x => x !== id)
             // items that pointed at the deleted roadmap become normal items again
-            Object.values(d.maps).forEach(m => itemsOf(m).forEach(i => { if (i.ref === id) i.ref = null }))
+            Object.values(d.maps).forEach(m => itemsOf(m).forEach(i => {
+                if (i.ref === id) i.ref = null
+                if (i.mirror && i.mirror.map === id) i.mirror = null
+            }))
             d.active = d.order[0]
         })
         setSel(null)
         setTrail([])
-        setMenu(false)
+        setMenu(null)
         setArmed(false)
         play('delete')
     }
@@ -788,6 +924,25 @@ export default function Roadmap() {
         })
         play('move')
     }
+
+    // The menu is drawn on top of the page (fixed position), so the scrolling tab row can never hide it
+    const toggleMenu = () => {
+        if (menu) return setMenu(null)
+        const r = menuBtn.current.getBoundingClientRect()
+        setArmed(false)
+        setMenu({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) })
+    }
+    useEffect(() => {
+        if (!menu) return
+        const close = () => setMenu(null)
+        const onKey = e => { if (e.key === 'Escape') close() }
+        window.addEventListener('resize', close)
+        window.addEventListener('keydown', onKey)
+        return () => {
+            window.removeEventListener('resize', close)
+            window.removeEventListener('keydown', onKey)
+        }
+    }, [menu])
 
     /* ----- derived ----- */
     const q = query.trim().toLowerCase()
@@ -825,69 +980,7 @@ export default function Roadmap() {
         })
     }, [store]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    /* ----- connector lines: drawn from the real position of every square ----- */
-    useLayoutEffect(() => {
-        drawRef.current = () => {
-            const map = mapRef.current
-            const svg = mainSvg.current
-            const ls = subSvg.current
-            if (!map || !svg || !ls) return
-            const m = map.getBoundingClientRect()
-            const cells = [...map.querySelectorAll('.rm-cell')]
-            const mobile = window.innerWidth < 700
-            const want = Math.max(0, cells.length - 1)
-            if (svg.children.length !== want * 2) {
-                svg.replaceChildren()
-                for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
-            }
-            cells.slice(0, -1).forEach((cell, i) => {
-                const A = cell.getBoundingClientRect()
-                const R = cell.parentNode.getBoundingClientRect()
-                const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
-                const x1 = A.left + A.width / 2 - m.left
-                const y0 = (mobile ? R.bottom : A.bottom) - m.top
-                const y1 = R.bottom - m.top
-                const x2 = B.left + B.width / 2 - m.left
-                const y2 = B.top - m.top
-                const d = Math.max(30, (y2 - y1) * 0.6)
-                const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
-                const t = data.topics[i]
-                svg.children[2 * i].setAttribute('d', D)
-                svg.children[2 * i + 1].setAttribute('d', D)
-                svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
-            })
-            ls.replaceChildren()
-            if (hideSubs || mobile) return
-            data.topics.forEach(t => {
-                const row = document.getElementById('rm-r-' + t.id)
-                if (!row) return
-                const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
-                const toRight = row.classList.contains('l')
-                t.subs.forEach(s => {
-                    const el = document.getElementById('rm-n-' + s.id)
-                    if (!el) return
-                    const e = el.getBoundingClientRect()
-                    const xs = (toRight ? box.right : box.left) - m.left
-                    const xe = (toRight ? e.left : e.right) - m.left
-                    const ys = box.top + box.height / 2 - m.top
-                    const ye = e.top + e.height / 2 - m.top
-                    ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
-                })
-            })
-        }
-    } )
-    useLayoutEffect(() => { drawRef.current() })
-    useEffect(() => {
-        const redraw = () => drawRef.current()
-        const ro = new ResizeObserver(redraw)
-        if (rowsRef.current) ro.observe(rowsRef.current)
-        window.addEventListener('resize', redraw)
-        if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw)
-        return () => {
-            ro.disconnect()
-            window.removeEventListener('resize', redraw)
-        }
-    }, [])
+    const { mapRef, rowsRef, mainSvg, subSvg } = useConnectors(data, st, hideSubs)
 
     useEffect(() => {
         if (!sel) return
@@ -904,29 +997,30 @@ export default function Roadmap() {
         <div className="rm" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt, '--c-adv': colors.adv }}>
             <style>{CSS}</style>
 
-            <div className="rm-tabs" role="tablist" aria-label="Roadmaps">
-                {store.order.filter(id => maps[id]).map(id => (
-                    <button key={id} role="tab" aria-selected={id === activeId} className={'rm-tab' + (id === activeId ? ' on' : '')} onClick={() => goRoadmap(id)}>
-                        <span className="rm-tabname">{maps[id].title || 'Untitled'}</span>
-                        <small>{mapProgress(maps[id], maps).pct}%</small>
-                    </button>
-                ))}
-                <button className="rm-tab rm-newtab" onClick={() => setCreating(true)}>+ New roadmap</button>
-                <span className="rm-menuwrap">
-                    <button className="rm-tab rm-newtab" onClick={() => { setMenu(!menu); setArmed(false) }} aria-label="Roadmap actions" aria-expanded={menu}>⋯</button>
-                    {menu && (
-                        <>
-                            <div className="rm-menuback" onClick={() => setMenu(false)} />
-                            <div className="rm-menu" role="menu">
-                                <button role="menuitem" onClick={() => { createRoadmap(`${data.title} (copy)`, 'copy') }}>Duplicate this roadmap</button>
-                                <button role="menuitem" disabled={store.order.indexOf(activeId) < 1} onClick={() => moveRoadmap(-1)}>Move left</button>
-                                <button role="menuitem" disabled={store.order.indexOf(activeId) >= store.order.length - 1} onClick={() => moveRoadmap(1)}>Move right</button>
-                                <button role="menuitem" className="danger" disabled={store.order.length < 2} onClick={() => { if (armed) deleteRoadmap(); else setArmed(true) }}>{armed ? 'Click again to delete' : 'Delete this roadmap'}</button>
-                            </div>
-                        </>
-                    )}
-                </span>
+            <div className="rm-tabbar">
+                <div className="rm-tabs" role="tablist" aria-label="Roadmaps">
+                    {store.order.filter(id => maps[id]).map(id => (
+                        <button key={id} role="tab" aria-selected={id === activeId} className={'rm-tab' + (id === activeId ? ' on' : '')} onClick={() => goRoadmap(id)}>
+                            <span className="rm-tabname">{maps[id].title || 'Untitled'}</span>
+                            <small>{mapProgress(maps[id], maps).pct}%</small>
+                        </button>
+                    ))}
+                    <button className="rm-tab rm-newtab" onClick={() => setCreating(true)}>+ New roadmap</button>
+                </div>
+                <button ref={menuBtn} className="rm-tab rm-newtab rm-more" onClick={toggleMenu} aria-label="Roadmap actions" aria-haspopup="menu" aria-expanded={Boolean(menu)}>⋯</button>
             </div>
+            {menu && createPortal(
+                <>
+                    <div className="rm-menuback" onClick={() => setMenu(null)} />
+                    <div className="rm-menu" role="menu" style={{ top: menu.top, right: menu.right }}>
+                        <button role="menuitem" onClick={() => createRoadmap(`${data.title} (copy)`, 'copy')}>⧉ Duplicate this roadmap</button>
+                        <button role="menuitem" disabled={store.order.indexOf(activeId) < 1} onClick={() => moveRoadmap(-1)}>← Move left</button>
+                        <button role="menuitem" disabled={store.order.indexOf(activeId) >= store.order.length - 1} onClick={() => moveRoadmap(1)}>→ Move right</button>
+                        <button role="menuitem" className="danger" disabled={store.order.length < 2} onClick={() => { if (armed) deleteRoadmap(); else setArmed(true) }}>{armed ? '⚠ Click again to delete' : '🗑 Delete this roadmap'}</button>
+                    </div>
+                </>,
+                document.body,
+            )}
 
             {lastFrom && (
                 <div className="rm-back"><button className="btn sm" onClick={goBack}>← Back to {lastFrom.title || 'previous roadmap'}</button></div>
@@ -994,79 +1088,13 @@ const noop = () => {}
 export function RoadmapView({ data }) {
     const maps = { [data.id]: data }
     const colors = { ...DEFAULT_COLORS, ...(data.colors || {}) }
-    const mapRef = useRef(null)
-    const rowsRef = useRef(null)
-    const mainSvg = useRef(null)
-    const subSvg = useRef(null)
-    const drawRef = useRef(null)
     const st = t => effStatus(t, maps)
     const all = itemsOf(data)
     const doneCount = all.filter(t => st(t) === 'done').length
     const must = all.filter(t => t.priority === 'must')
     const pct = all.length ? Math.round((100 * doneCount) / all.length) : 0
 
-    useLayoutEffect(() => {
-        drawRef.current = () => {
-            const map = mapRef.current
-            const svg = mainSvg.current
-            const ls = subSvg.current
-            if (!map || !svg || !ls) return
-            const m = map.getBoundingClientRect()
-            const cells = [...map.querySelectorAll('.rm-cell')]
-            const mobile = window.innerWidth < 700
-            const want = Math.max(0, cells.length - 1)
-            if (svg.children.length !== want * 2) {
-                svg.replaceChildren()
-                for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
-            }
-            cells.slice(0, -1).forEach((cell, i) => {
-                const A = cell.getBoundingClientRect()
-                const R = cell.parentNode.getBoundingClientRect()
-                const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
-                const x1 = A.left + A.width / 2 - m.left
-                const y0 = (mobile ? R.bottom : A.bottom) - m.top
-                const y1 = R.bottom - m.top
-                const x2 = B.left + B.width / 2 - m.left
-                const y2 = B.top - m.top
-                const d = Math.max(30, (y2 - y1) * 0.6)
-                const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
-                const t = data.topics[i]
-                svg.children[2 * i].setAttribute('d', D)
-                svg.children[2 * i + 1].setAttribute('d', D)
-                svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
-            })
-            ls.replaceChildren()
-            if (mobile) return
-            data.topics.forEach(t => {
-                const row = document.getElementById('rm-r-' + t.id)
-                if (!row) return
-                const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
-                const toRight = row.classList.contains('l')
-                t.subs.forEach(s => {
-                    const el = document.getElementById('rm-n-' + s.id)
-                    if (!el) return
-                    const e = el.getBoundingClientRect()
-                    const xs = (toRight ? box.right : box.left) - m.left
-                    const xe = (toRight ? e.left : e.right) - m.left
-                    const ys = box.top + box.height / 2 - m.top
-                    const ye = e.top + e.height / 2 - m.top
-                    ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
-                })
-            })
-        }
-    })
-    useLayoutEffect(() => { drawRef.current() })
-    useEffect(() => {
-        const redraw = () => drawRef.current()
-        const ro = new ResizeObserver(redraw)
-        if (rowsRef.current) ro.observe(rowsRef.current)
-        window.addEventListener('resize', redraw)
-        if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw)
-        return () => {
-            ro.disconnect()
-            window.removeEventListener('resize', redraw)
-        }
-    }, [])
+    const { mapRef, rowsRef, mainSvg, subSvg } = useConnectors(data, st)
 
     return (
         <div className="rm rm-view" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt, '--c-adv': colors.adv }}>
@@ -1109,23 +1137,24 @@ const CSS = `
 .rm-title{border:0!important;background:none!important;font:700 26px var(--head)!important;padding:2px 4px!important;flex:1 1 280px;min-width:0}
 .rm-search{width:150px!important}
 .rm-legend{flex:1 1 100%;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.rm-tabs{display:flex;gap:6px;align-items:center;overflow-x:auto;padding:2px 0 12px;margin-bottom:6px;scrollbar-width:thin}
+.rm-tabbar{display:flex;gap:6px;align-items:center;padding:2px 0 12px;margin-bottom:6px}
+.rm-tabs{display:flex;gap:6px;align-items:center;overflow-x:auto;flex:1;min-width:0;padding-bottom:2px;scrollbar-width:thin}
+.rm-more{padding:6px 14px}
 .rm-tab{display:inline-flex;gap:8px;align-items:center;flex:none;border:1px solid var(--ln);background:var(--sf);color:var(--mu);border-radius:999px;padding:6px 14px;cursor:pointer;font-weight:500;white-space:nowrap}
 .rm-tab:hover{border-color:var(--ac);color:var(--tx)}
-.rm-tab.on{background:color-mix(in srgb,var(--ac) 16%,var(--sf));border-color:var(--ac);color:var(--tx)}
+.rm-tab.on{background:color-mix(in srgb,var(--ac) 16%,var(--sf));border-color:var(--ac);color:var(--tx);box-shadow:0 2px 10px color-mix(in srgb,var(--ac) 25%,transparent)}
 .rm-tab small{font-size:11px;font-weight:600;color:var(--mu)}.rm-tab.on small{color:var(--ac)}
 .rm-tabname{max-width:180px;overflow:hidden;text-overflow:ellipsis}
 .rm-newtab{border-style:dashed;background:none}
-.rm-menuwrap{position:relative;flex:none}
-.rm-menuback{position:fixed;inset:0;z-index:30}
-.rm-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:31;min-width:210px;background:var(--sf);border:1px solid var(--ln);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.3);padding:6px;display:grid;animation:rise .12s}
+.rm-menuback{position:fixed;inset:0;z-index:90}
+.rm-menu{position:fixed;z-index:95;min-width:220px;max-width:calc(100vw - 16px);background:var(--sf);border:1px solid var(--ln);border-radius:10px;box-shadow:0 12px 40px rgba(0,0,0,.3);padding:6px;display:grid;animation:rise .12s}
 .rm-menu button{border:0;background:none;text-align:left;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--tx)}
 .rm-menu button:hover:not(:disabled){background:var(--sf2)}.rm-menu button:disabled{opacity:.4;cursor:not-allowed}.rm-menu .danger{color:var(--bad)}
 .rm-back{margin-bottom:8px}
 .rm-ch{font-size:12px;border:1.5px solid var(--mu);border-radius:6px;background:none;color:var(--tx);padding:2px 10px;cursor:pointer}
 .rm-ch.act{box-shadow:0 0 0 2px var(--ac)}
 .rm-pg{flex:1 1 100%;display:flex;align-items:center;gap:12px}
-.rm-track{flex:1;height:8px;border-radius:9px;background:var(--ln);overflow:hidden}.rm-track i{display:block;height:100%;background:var(--ok);transition:width .5s}
+.rm-track{flex:1;height:8px;border-radius:9px;background:var(--ln);overflow:hidden}.rm-track i{display:block;height:100%;background:linear-gradient(90deg,var(--ok),color-mix(in srgb,var(--ok) 60%,#fff));transition:width .5s}
 .rm-map{position:relative;padding:44px 0 40px}
 .rm-ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 .rm-base{fill:none;stroke:var(--ln);stroke-width:3;stroke-dasharray:7 9;stroke-linecap:round}
@@ -1135,16 +1164,15 @@ const CSS = `
 .rm-row{display:flex;align-items:flex-start;gap:56px}.rm-row.l{padding-left:2%}.rm-row.r{flex-direction:row-reverse;padding-right:2%}
 .rm-cell{width:230px;flex:none}
 .rm-subs{display:flex;flex-direction:column;gap:12px;padding-top:6px}.nosub .rm-subs{display:none}
-.rm-node{position:relative;width:230px;background:var(--sf);border:1.5px solid var(--mu);border-radius:8px;padding:10px 12px;transition:border-color .2s,background .2s,opacity .2s}
+.rm-node{position:relative;width:230px;background:var(--sf);border:1.5px solid var(--mu);border-radius:8px;padding:10px 12px;transition:border-color .2s,background .2s,opacity .2s,transform .15s,box-shadow .2s}
 .rm-node.s{width:170px;padding:8px 10px;border-radius:6px}
 /* every priority has its own colour: a tint inside, a coloured border, and a different border style as a second clue */
-.p-must,.p-rec,.p-nice,.p-opt{border-color:var(--pc);background:color-mix(in srgb,var(--pc) 14%,var(--sf))}
 .p-must{--pc:var(--c-must);border-width:2px;border-style:solid}
 .p-rec{--pc:var(--c-rec);border-width:1.5px;border-style:solid}
 .p-nice{--pc:var(--c-nice);border-width:1.5px;border-style:dashed}
 .p-opt{--pc:var(--c-opt);border-width:1.5px;border-style:dotted}
 .rm-node.doing{border-color:var(--wip)}.rm-node.done{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,var(--sf))}
-.rm-node:hover{border-color:var(--ac)}.rm-node.dim{opacity:.25}
+.rm-node:hover{border-color:var(--ac);transform:translateY(-1px);box-shadow:var(--shadow)}.rm-node.dim{opacity:.25}
 .rm-sample{padding:4px 16px;border-radius:8px;font-weight:600}
 .rm-chk{position:absolute;top:8px;right:8px;width:20px;height:20px;border-radius:5px;border:1.5px solid var(--mu);background:none;color:transparent;font-size:12px;font-weight:700;cursor:pointer;padding:0}
 .rm-node.done>.rm-chk{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -1160,7 +1188,7 @@ const CSS = `
 .rm-chk:disabled{opacity:.55;cursor:not-allowed}
 .rm-linkbox{display:grid;gap:8px;margin-top:10px;padding:12px;border:1px solid var(--ln);border-radius:8px;background:var(--sf2)}
 .rm-linkbox .rm-bar{margin:0}
-.rm-bar{height:4px;border-radius:4px;background:var(--ln);overflow:hidden;margin-top:4px}.rm-bar i{display:block;height:100%;background:var(--ok);transition:width .4s}
+.rm-bar{height:4px;border-radius:4px;background:var(--ln);overflow:hidden;margin-top:4px}.rm-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--ac),var(--ok));transition:width .4s}
 .rm-gl{display:block;width:1.5px;height:14px;background:var(--mu);margin-left:14px}
 .rm-gr{display:flex;gap:12px;align-items:flex-start;margin-left:6px}.rm-gr b{font-size:12px}.rm-gr small{display:block;color:var(--mu);font-size:12px;line-height:1.35}
 .rm-dm{flex:none;width:16px;height:16px;transform:rotate(45deg);border:1.5px solid var(--mu);background:var(--sf);cursor:pointer;margin-top:4px;padding:0}
