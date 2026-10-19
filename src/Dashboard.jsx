@@ -155,8 +155,9 @@ function StreakCard() {
    Weekly board (Saturday to Friday)
    ============================================================ */
 
-function TodoItem({ todo, day, onToggle, onEdit, onDelete }) {
+function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn }) {
     const [editing, setEditing] = useState(false)
+    const [edge, setEdge] = useState(null) // 'top' | 'bottom' | null: where a dragged todo would land
     const [draft, setDraft] = useState(todo.text)
     const [linkDraft, setLinkDraft] = useState(todo.link || '')
     const meta = TYPES[todo.type] || TYPES.task
@@ -175,8 +176,25 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete }) {
     }
 
     return (
-        <li className={'td' + (todo.done ? ' done' : '')} draggable={!editing}
-            onDragStart={e => e.dataTransfer.setData('text/plain', JSON.stringify({ day, id: todo.id }))}>
+        <li className={'td' + (todo.done ? ' done' : '') + (edge ? ' drop-' + edge : '')} draggable={!editing}
+            onDragStart={e => e.dataTransfer.setData('text/plain', JSON.stringify({ day, id: todo.id }))}
+            onDragOver={e => {
+                e.preventDefault()
+                const r = e.currentTarget.getBoundingClientRect()
+                setEdge(e.clientY < r.top + r.height / 2 ? 'top' : 'bottom')
+            }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setEdge(null) }}
+            onDrop={e => {
+                e.preventDefault()
+                e.stopPropagation() // the column's own drop handler would append to the end
+                const where = edge
+                setEdge(null)
+                try {
+                    const d = JSON.parse(e.dataTransfer.getData('text/plain'))
+                    if (d.id !== todo.id) onDropOn(d.day, d.id, todo.id, where === 'bottom')
+                } catch { return }
+            }}
+            onDragEnd={() => setEdge(null)}>
             <input type="checkbox" checked={todo.done} onChange={e => onToggle(todo.id, e.currentTarget)} aria-label={`Mark "${todo.text}" as done`} />
             <div className="td-main">
                 {editing ? (
@@ -195,7 +213,10 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete }) {
                         <button className="icon-btn td-pen" onClick={startEdit} aria-label="Edit todo and link" title="Edit">✎</button>
                     </span>
                 ) : (
-                    <button className="td-text" onClick={startEdit} title="Click to edit">{todo.text}</button>
+                    <span className="td-title">
+                        <button className="td-text" onClick={startEdit} title="Click to edit">{todo.text}</button>
+                        <button className="icon-btn td-pen" onClick={startEdit} aria-label="Edit todo" title="Edit">✎</button>
+                    </span>
                 )}
                 <select className="td-type" value={todo.type} onChange={e => onEdit(todo.id, { type: e.target.value })} style={{ '--c': meta.color }} aria-label="Type">
                     {TYPE_KEYS.map(k => <option key={k} value={k}>{TYPES[k].icon} {TYPES[k].label}</option>)}
@@ -244,7 +265,8 @@ function DayColumn({ day, date, list, isToday, isPast, filter, onAdd, onToggle, 
             <ul className="wk-list">
                 {shown.map(t => (
                     <TodoItem key={t.id} todo={t} day={day} onToggle={(id, el) => onToggle(day, id, el)}
-                        onEdit={(id, patch) => onEdit(day, id, patch)} onDelete={id => onDelete(day, id)} />
+                        onEdit={(id, patch) => onEdit(day, id, patch)} onDelete={id => onDelete(day, id)}
+                        onDropOn={(from, id, targetId, after) => onMove(from, id, day, targetId, after)} />
                 ))}
             </ul>
             {shown.length === 0 && !adding && <p className="muted small wk-empty">{list.length ? 'Nothing of this type.' : isPast ? 'Nothing planned.' : 'Plan something for this day.'}</p>}
@@ -300,12 +322,18 @@ function WeekBoard() {
         update(d => { ensure(d)[day] = ensure(d)[day].filter(x => x.id !== id) })
         play('delete')
     }
-    const move = (from, id, to) => {
-        if (from === to) return
+    // targetId: drop next to this todo (before it, or after it when `after` is true); omitted = append to the end
+    const move = (from, id, to, targetId = null, after = false) => {
+        if (from === to && !targetId) return
         update(d => {
             const w = ensure(d)
             const i = w[from].findIndex(t => t.id === id)
-            if (i >= 0) w[to].push(w[from].splice(i, 1)[0])
+            if (i < 0) return
+            const [item] = w[from].splice(i, 1)
+            // Find the target after removing the item, so the index is correct for same-day moves
+            const j = targetId ? w[to].findIndex(t => t.id === targetId) : -1
+            if (j < 0) w[to].push(item)
+            else w[to].splice(after ? j + 1 : j, 0, item)
         })
         play('move')
     }
@@ -711,7 +739,7 @@ const CSS = `
 .wk-new{margin-top:auto;justify-content:flex-start;color:var(--mu)}
 .wk-add{display:grid;gap:6px;margin-top:auto}
 .td{display:flex;gap:8px;align-items:flex-start;background:var(--sf);border:1px solid var(--ln);border-radius:8px;padding:7px 8px;cursor:grab}
-.td:hover{border-color:var(--ac)}.td input[type=checkbox]{margin-top:3px;flex:none}
+.td:hover{border-color:var(--ac)}.td.drop-top{box-shadow:0 -3px 0 0 var(--ac)}.td.drop-bottom{box-shadow:0 3px 0 0 var(--ac)}.td input[type=checkbox]{margin-top:3px;flex:none}
 .td-main{flex:1;min-width:0;display:grid;gap:5px;justify-items:start}
 .td-text{all:unset;cursor:text;line-height:1.35;word-break:break-word}.td-text:focus-visible{outline:2px solid var(--ac);border-radius:4px}
 .td.done .td-text{text-decoration:line-through;color:var(--mu)}
