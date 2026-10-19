@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
-    DAYS, STUDY_DEFAULT, TYPES, TYPE_KEYS, addDays, addTodoToday, dayIndex, hms, iso, parseISO, quoteOfDay,
+    DAYS, STUDY_DEFAULT, TYPES, TYPE_KEYS, addDays, addTodoToday, dayIndex, hms, isHttp, iso, normalizeUrl, parseISO, quoteOfDay,
     todayISO, uid, until, useNow, useStats, useStore, weekStart,
 } from './shared'
 import { EVENT_COLORS, removeEvent, toggleTodo } from './todoActions'
@@ -61,6 +61,7 @@ export function LeftRail({ sheet = false }) {
     const [todos] = useStore('todos', {})
     const [text, setText] = useState('')
     const [type, setType] = useState('task')
+    const [link, setLink] = useState('')
     const key = iso(weekStart(now))
     const day = dayIndex(now)
     const list = (todos[key] || [])[day] || []
@@ -70,9 +71,10 @@ export function LeftRail({ sheet = false }) {
         e.preventDefault()
         const v = text.trim()
         if (!v) return
-        addTodoToday({ text: v, type })
+        addTodoToday({ text: v, type, link: normalizeUrl(link) })
         play('add')
         setText('')
+        setLink('')
     }
 
     return (
@@ -84,13 +86,16 @@ export function LeftRail({ sheet = false }) {
                     {list.map(t => (
                         <li key={t.id} className={t.done ? 'done' : ''}>
                             <input type="checkbox" checked={t.done} onChange={e => toggleTodo(key, day, t.id, e.currentTarget)} aria-label={`Mark "${t.text}" as done`} />
-                            <span>{(TYPES[t.type] || TYPES.task).icon} {t.text}</span>
+                            <span>{(TYPES[t.type] || TYPES.task).icon} {isHttp(t.link || '')
+                                ? <a className="rail-link" href={t.link} target="_blank" rel="noopener noreferrer" title={t.link}>{t.text}</a>
+                                : t.text}</span>
                         </li>
                     ))}
                 </ul>
                 {!list.length && <p className="muted small" style={{ margin: 0 }}>Nothing planned today.</p>}
                 <form className="rail-add" onSubmit={add}>
                     <input value={text} onChange={e => setText(e.target.value)} placeholder="Quick add for today" aria-label="Quick add todo" />
+                    <input value={link} onChange={e => setLink(e.target.value)} placeholder="Link (optional)" aria-label="Quick add link, optional" inputMode="url" maxLength={500} />
                     <div className="row">
                         <select value={type} onChange={e => setType(e.target.value)} aria-label="Type" style={{ flex: 1 }}>
                             {TYPE_KEYS.map(k => <option key={k} value={k}>{TYPES[k].icon} {TYPES[k].label}</option>)}
@@ -306,6 +311,8 @@ export const RAIL_CSS = `
 .rail-todos,.rail-up{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .rail-todos li{display:flex;gap:8px;align-items:flex-start;overflow-wrap:anywhere}
 .rail-todos li.done span{text-decoration:line-through;color:var(--mu)}
+.rail-link{color:var(--ac);text-decoration:underline;text-underline-offset:2px}
+.rail-todos li.done .rail-link{color:var(--mu);text-decoration:line-through}
 .rail-todos input{margin-top:3px;flex:none}
 .rail-add{display:grid;gap:6px}
 .rail textarea{min-height:90px}

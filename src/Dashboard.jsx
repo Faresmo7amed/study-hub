@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Database from './Database'
 import { play } from './sound'
 import {
-    BADGES, DAYS, TYPES, TYPE_KEYS, addDays, clamp, dayIndex, emptyWeek, hms, iso,
-    notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
+    BADGES, DAYS, TYPES, TYPE_KEYS, addDays, clamp, dayIndex, emptyWeek, hms, isHttp, iso,
+    normalizeUrl, notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
     useNow, useStats, useStore, weekStart,
 } from './shared'
 import { EVENT_COLORS, removeEvent, toggleTodo } from './todoActions'
@@ -158,12 +158,19 @@ function StreakCard() {
 function TodoItem({ todo, day, onToggle, onEdit, onDelete }) {
     const [editing, setEditing] = useState(false)
     const [draft, setDraft] = useState(todo.text)
+    const [linkDraft, setLinkDraft] = useState(todo.link || '')
     const meta = TYPES[todo.type] || TYPES.task
+    const hasLink = isHttp(todo.link || '')
 
+    const startEdit = () => {
+        setDraft(todo.text)
+        setLinkDraft(todo.link || '')
+        setEditing(true)
+    }
     const save = () => {
         const v = draft.trim()
-        if (v && v !== todo.text) onEdit(todo.id, { text: v })
-        if (!v) setDraft(todo.text)
+        const link = normalizeUrl(linkDraft)
+        if (v && (v !== todo.text || link !== (todo.link || ''))) onEdit(todo.id, { text: v, link })
         setEditing(false)
     }
 
@@ -173,13 +180,22 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete }) {
             <input type="checkbox" checked={todo.done} onChange={e => onToggle(todo.id, e.currentTarget)} aria-label={`Mark "${todo.text}" as done`} />
             <div className="td-main">
                 {editing ? (
-                    <input autoFocus value={draft} onChange={e => setDraft(e.target.value)} onBlur={save} aria-label="Edit todo"
+                    <div className="td-edit"
+                        onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) save() }}
                         onKeyDown={e => {
                             if (e.key === 'Enter') save()
-                            if (e.key === 'Escape') { setDraft(todo.text); setEditing(false) }
-                        }} />
+                            if (e.key === 'Escape') setEditing(false)
+                        }}>
+                        <input autoFocus value={draft} onChange={e => setDraft(e.target.value)} aria-label="Edit todo" />
+                        <input value={linkDraft} onChange={e => setLinkDraft(e.target.value)} placeholder="Link (optional)" aria-label="Edit link, optional" inputMode="url" maxLength={500} />
+                    </div>
+                ) : hasLink ? (
+                    <span className="td-title">
+                        <a className="td-text td-link" href={todo.link} target="_blank" rel="noopener noreferrer" draggable={false} title={todo.link}>{todo.text}</a>
+                        <button className="icon-btn td-pen" onClick={startEdit} aria-label="Edit todo and link" title="Edit">✎</button>
+                    </span>
                 ) : (
-                    <button className="td-text" onClick={() => { setDraft(todo.text); setEditing(true) }} title="Click to edit">{todo.text}</button>
+                    <button className="td-text" onClick={startEdit} title="Click to edit">{todo.text}</button>
                 )}
                 <select className="td-type" value={todo.type} onChange={e => onEdit(todo.id, { type: e.target.value })} style={{ '--c': meta.color }} aria-label="Type">
                     {TYPE_KEYS.map(k => <option key={k} value={k}>{TYPES[k].icon} {TYPES[k].label}</option>)}
@@ -194,6 +210,7 @@ function DayColumn({ day, date, list, isToday, isPast, filter, onAdd, onToggle, 
     const [adding, setAdding] = useState(false)
     const [text, setText] = useState('')
     const [type, setType] = useState('task')
+    const [link, setLink] = useState('')
     const [over, setOver] = useState(false)
     const shown = filter === 'all' ? list : list.filter(t => t.type === filter)
     const done = list.filter(t => t.done).length
@@ -202,8 +219,9 @@ function DayColumn({ day, date, list, isToday, isPast, filter, onAdd, onToggle, 
         e.preventDefault()
         const v = text.trim()
         if (!v) return
-        onAdd(day, { text: v, type })
+        onAdd(day, { text: v, type, link: normalizeUrl(link) })
         setText('')
+        setLink('')
     }
 
     return (
@@ -233,6 +251,8 @@ function DayColumn({ day, date, list, isToday, isPast, filter, onAdd, onToggle, 
             {adding ? (
                 <form className="wk-add" onSubmit={submit}>
                     <input autoFocus value={text} onChange={e => setText(e.target.value)} placeholder="What will you do?" aria-label="New todo"
+                        onKeyDown={e => e.key === 'Escape' && setAdding(false)} />
+                    <input value={link} onChange={e => setLink(e.target.value)} placeholder="Link (optional)" aria-label="Link, optional" inputMode="url" maxLength={500}
                         onKeyDown={e => e.key === 'Escape' && setAdding(false)} />
                     <div className="row">
                         <select value={type} onChange={e => setType(e.target.value)} aria-label="Type" style={{ flex: 1 }}>
@@ -266,8 +286,8 @@ function WeekBoard() {
         if (!draft[key]) draft[key] = emptyWeek()
         return draft[key]
     }
-    const add = (day, { text, type }) => {
-        update(d => { ensure(d)[day].push({ id: uid(), text, type, done: false, doneOn: null }) })
+    const add = (day, { text, type, link }) => {
+        update(d => { ensure(d)[day].push({ id: uid(), text, type, ...(link ? { link } : {}), done: false, doneOn: null }) })
         play('add')
     }
     const edit = (day, id, patch) => update(d => {
@@ -297,7 +317,7 @@ function WeekBoard() {
                 const cur = ensure(d)
                 prev.forEach((list, i) => list.filter(t => !t.done).forEach(t => {
                     if (cur[i].some(x => x.text === t.text && x.type === t.type)) return
-                    cur[i].push({ id: uid(), text: t.text, type: t.type, done: false, doneOn: null })
+                    cur[i].push({ id: uid(), text: t.text, type: t.type, ...(t.link ? { link: t.link } : {}), done: false, doneOn: null })
                     count += 1
                 }))
             })
@@ -695,6 +715,10 @@ const CSS = `
 .td-main{flex:1;min-width:0;display:grid;gap:5px;justify-items:start}
 .td-text{all:unset;cursor:text;line-height:1.35;word-break:break-word}.td-text:focus-visible{outline:2px solid var(--ac);border-radius:4px}
 .td.done .td-text{text-decoration:line-through;color:var(--mu)}
+.td-title{display:flex;gap:6px;align-items:baseline;max-width:100%}
+.td-link{cursor:pointer;color:var(--ac);text-decoration:underline;text-underline-offset:2px}.td-link:hover{filter:brightness(1.15)}
+.td-pen{opacity:.45;padding:0 4px;font-size:13px}.td:hover .td-pen,.td-pen:focus-visible{opacity:1}
+.td-edit{display:grid;gap:5px;width:100%}
 .td-type{appearance:none;border:0;background:color-mix(in srgb,var(--c) 18%,transparent);color:color-mix(in srgb,var(--c) 65%,var(--tx));border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;cursor:pointer;width:auto}
 .td-x{opacity:0;padding:0 6px}.td:hover .td-x,.td-x:focus-visible{opacity:1}
 .cal{padding:20px;display:grid;gap:12px}

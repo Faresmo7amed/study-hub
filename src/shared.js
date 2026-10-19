@@ -325,13 +325,13 @@ export const BADGES = [
 /* ============================================================
    Todos from anywhere in the app (used by the Roadmap page)
    ============================================================ */
-export function addTodoToday({ text, type = 'task' }) {
+export function addTodoToday({ text, type = 'task', link = '' }) {
     const now = new Date()
     const key = iso(weekStart(now))
     const day = dayIndex(now)
     setStore('todos', cur => {
         const week = (cur[key] || emptyWeek()).map(list => [...list])
-        week[day].push({ id: uid(), text, type, done: false, doneOn: null })
+        week[day].push({ id: uid(), text, type, ...(link ? { link } : {}), done: false, doneOn: null })
         return { ...cur, [key]: week }
     }, {})
 }

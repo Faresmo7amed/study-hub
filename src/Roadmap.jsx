@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { addTodoToday, confetti, getStore, isStored, notify, setStore, uid, useStore } from './shared'
+import { addTodoToday, confetti, getStore, isHttp, isStored, notify, setStore, uid, useStore } from './shared'
 import { play } from './sound'
 import { Icon, IconPicker } from './Icons'
 import { cleanIcon } from './iconUtils'
@@ -389,9 +389,9 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
         nf.current = item.id
         api.addIn(t.id, key, item)
     }
-    const sendToday = (label, type) => {
+    const sendToday = (label, type, url = '') => {
         if (!label.trim()) return
-        addTodoToday({ text: label.trim(), type })
+        addTodoToday({ text: label.trim(), type, link: isHttp(url) ? url : '' })
         play('add')
         notify({ title: 'Added to today', body: label.trim(), icon: '📌' })
     }
@@ -505,7 +505,7 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                             <div className="row" style={{ flexWrap: 'nowrap' }}>
                                 <input type="text" value={x.url} placeholder="https://…" aria-label="URL" onChange={e => api.patchItem(t.id, 'url', x, e.target.value, 'res')} />
                                 {/^https?:\/\//.test(x.url) && <a className="rm-link" href={x.url} target="_blank" rel="noopener noreferrer">Open</a>}
-                                <button className="btn sm ghost" title="Add to today's todos" onClick={() => sendToday(x.t || x.url, RES_TO_TODO[x.type] || 'task')}>→ Today</button>
+                                <button className="btn sm ghost" title="Add to today's todos" onClick={() => sendToday(x.t || x.url, RES_TO_TODO[x.type] || 'task', x.url)}>→ Today</button>
                             </div>
                         </div>
                     </Row>
