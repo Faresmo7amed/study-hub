@@ -1055,7 +1055,7 @@ const removeShare = id => {
 }
 
 const CSS = `
-.sg{max-width:1100px;margin:auto;padding:24px 20px 90px;display:grid;gap:18px}
+.sg{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;gap:18px}
 .sg-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.sg-head h1{font-size:32px}
 .sg-box{padding:20px;display:grid;gap:10px}
 .sg-add form{flex-wrap:nowrap}
@@ -1084,7 +1084,7 @@ const CSS = `
 .sg-full{position:fixed;inset:0;z-index:60;background:var(--bg);overflow:auto}
 .sg-fullbar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--ln)}
 .sg-fulltitle{display:grid;min-width:0}
-.sg-fullbody{max-width:1400px;margin:auto;padding:20px}
+.sg-fullbody{max-width:1600px;margin:auto;padding:20px}
 .sg-row{display:grid;grid-template-columns:30px minmax(0,1fr) auto minmax(110px,150px) auto;gap:12px;align-items:center;background:var(--sf2);border:1px solid var(--ln);border-radius:10px;padding:12px 14px;transition:border-color .15s}
 .sg-row:hover{border-color:var(--ac)}
 .sg-row.me{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}

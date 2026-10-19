@@ -155,7 +155,7 @@ const CSS = `
 .hm-grid .hm-cell:hover:not(:disabled){transform:scale(1.35);position:relative;z-index:1}
 .hm-legend{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--mu)}
 .hm-legend .hm-cell{cursor:default;width:11px;height:11px}
-.hmc{padding:20px;display:grid;gap:10px}
+.hmc{padding:20px;display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
 .hmc-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.hmc-head h2{font-size:22px}
 .hmc-foot{display:flex;justify-content:space-between;gap:10px 20px;flex-wrap:wrap;align-items:center}
 .hmc-stats{display:flex;gap:6px 18px;flex-wrap:wrap;font-size:13px;color:var(--mu)}.hmc-stats b{color:var(--tx);font-size:15px}

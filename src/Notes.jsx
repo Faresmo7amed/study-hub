@@ -486,7 +486,7 @@ export default function Notes() {
 }
 
 const CSS = `
-.kp{max-width:1400px;margin:auto;padding:24px 20px 90px;display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px;align-items:start}
+.kp{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px;align-items:start}
 .kp-side{position:sticky;top:78px;display:grid;gap:2px}
 .kp-side button{display:flex;align-items:center;gap:10px;border:0;background:none;padding:9px 14px;border-radius:999px;cursor:pointer;text-align:left;color:var(--tx);font-weight:500}
 .kp-side button:hover{background:var(--sf2)}.kp-side button.on{background:color-mix(in srgb,var(--ac) 16%,transparent);color:var(--ac)}

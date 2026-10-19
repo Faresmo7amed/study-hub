@@ -635,9 +635,9 @@ export default function Dashboard() {
 }
 
 const CSS = `
-.dash{max-width:1400px;margin:auto;padding:24px 20px 90px;display:grid;gap:20px}
+.dash{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;grid-template-columns:minmax(0,1fr);gap:20px}
 .dash-hero{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:20px}
-.dash-jump{display:flex;gap:6px;margin:-8px 0 -4px}
+.dash-jump{display:flex;flex-wrap:wrap;gap:6px;margin:-8px 0 -4px}
 .dash-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
 .dash-side{display:grid;gap:20px}
 .side-card{padding:18px;display:grid;gap:10px}

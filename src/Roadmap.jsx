@@ -1132,7 +1132,7 @@ export function RoadmapView({ data }) {
 }
 
 const CSS = `
-.rm{max-width:960px;margin:0 auto;padding:20px 20px 120px}
+.rm{max-width:1600px;margin:0 auto;padding:20px 20px 120px}
 .rm-head{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding-bottom:14px;border-bottom:1px solid var(--ln)}
 .rm-title{border:0!important;background:none!important;font:700 26px var(--head)!important;padding:2px 4px!important;flex:1 1 280px;min-width:0}
 .rm-search{width:150px!important}
