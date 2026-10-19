@@ -5,7 +5,7 @@ import {
 } from './shared'
 import { EVENT_COLORS, removeEvent, toggleTodo } from './todoActions'
 import { loadRoadmaps, nextUp, openRoadmap, roadmapList } from './Roadmap'
-import { MAX_SESSION, STREAK_MIN, fmtMin, startSession, stopSession, streakOf } from './StudyGroup'
+import { MAX_SESSION, STREAK_MIN, fmtMin, pauseSession, resumeSession, runActive, runElapsed, runRunning, startSession, stopSession, streakOf } from './StudyGroup'
 import { SocialLinks, openSettings } from './Settings'
 import { useSyncState } from './sync'
 import { play } from './sound'
@@ -34,22 +34,28 @@ function StudyCard() {
     const { user } = useSyncState()
     const [run] = useStore('studyrun', {})
     const [study] = useStore('studygroup', STUDY_DEFAULT)
-    const now = useNow(run.start ? 1000 : 60000)
+    const active = runActive(run)
+    const running = runRunning(run)
+    const now = useNow(running ? 1000 : 60000)
     const hidden = useHidden('study')
     if (hidden) return null
     const today = todayISO()
-    const elapsed = run.start ? now.getTime() - run.start : 0
+    const elapsed = runElapsed(run, now.getTime())
     const mins = (study.days[today] || 0) + Math.min(MAX_SESSION, Math.floor(elapsed / 60000))
     const { streak } = streakOf({ ...study.days, [today]: mins }, today)
     return (
-        <section className={'card rail-card rail-study' + (run.start ? ' on' : '')}>
+        <section className={'card rail-card rail-study' + (running ? ' on' : '')}>
             <div className="row"><h3 className="grow">Study timer</h3><span className="app-chip" title={`${STREAK_MIN} minutes a day keep the study streak`}>📚 {streak}d</span></div>
             <div className="rail-clock">{hms(elapsed)}</div>
             <div className="bar"><i className={mins >= STREAK_MIN ? 'full' : ''} style={{ width: Math.min(100, (100 * mins) / STREAK_MIN) + '%' }} /></div>
             <p className="muted small" style={{ margin: 0 }}>{fmtMin(mins)} today · {mins >= STREAK_MIN ? 'streak day secured ✅' : `${STREAK_MIN - mins} min to keep the streak`}</p>
-            <button className={'btn ' + (run.start ? 'danger' : 'primary')} onClick={() => (run.start ? stopSession(user) : startSession(user))}>
-                {run.start ? 'Stop and save' : 'Start studying'}
-            </button>
+            {!active && <button className="btn primary" onClick={() => startSession(user)}>Start studying</button>}
+            {active && (
+                <div className="row" style={{ gap: 6 }}>
+                    {running ? <button className="btn grow" onClick={() => pauseSession(user)}>Pause</button> : <button className="btn primary grow" onClick={() => resumeSession(user)}>Resume</button>}
+                    <button className="btn danger grow" onClick={() => stopSession(user)}>Stop and save</button>
+                </div>
+            )}
         </section>
     )
 }

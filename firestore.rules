@@ -55,13 +55,14 @@ service cloud.firestore {
         allow create, update: if request.auth != null
           && request.auth.uid == uid
           && exists(/databases/$(database)/documents/groups/$(code))
-          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'todos', 'profile', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'paused', 'todos', 'profile', 'updatedAt'])
           && request.resource.data.name is string
           && request.resource.data.name.size() > 0
           && request.resource.data.name.size() <= 24
           && request.resource.data.days is map
           && request.resource.data.total is number
           && request.resource.data.studying is number
+          && request.resource.data.get('paused', 0) is number
           && request.resource.data.get('todos', {}) is map
           && profileOk(request.resource.data.get('profile', {}))
           && request.resource.data.updatedAt is number;

@@ -4,7 +4,7 @@ import { DatabaseView, loadBlocks, snapshotBlock } from './Database'
 import { RoadmapView, loadRoadmaps, snapshotRoadmap } from './Roadmap'
 import { HeatGrid, HeatLegend } from './Heatmap'
 import * as fb from './firebase'
-import { useSyncState } from './sync'
+import { getSyncUser, useSyncState } from './sync'
 import { play } from './sound'
 
 /* eslint-disable react-refresh/only-export-components */
@@ -128,7 +128,9 @@ function publish(user, ids) {
         name: s.name,
         days: Object.fromEntries(Object.entries(s.days).filter(([k]) => k >= cutoff)),
         total: s.total,
-        studying: getStore('studyrun', {}).start || 0,
+        // A running session is shared as a virtual start time; a paused one as the milliseconds counted so far
+        studying: (() => { const p = runParts(getStore('studyrun', {})); return p && p.since ? p.since - p.acc : 0 })(),
+        ...(() => { const p = runParts(getStore('studyrun', {})); return p && !p.since ? { paused: Math.max(0, p.acc) } : {} })(),
         todos: {
             done: planned.filter(t => t.done).length, total: planned.length,
             week: weekKey, plan: planOf(week), streak: app.streak, best: app.best,
@@ -140,18 +142,93 @@ function publish(user, ids) {
     list.forEach(id => fb.saveMember(id, user.uid, card).catch(fail))
 }
 
-/* The running session is stored on this device only ("studyrun"), so a reload does not lose it */
+/* The session is stored on this device only ("studyrun"), so a reload does not lose it.
+   Shape: { on: true, acc: ms counted before the current stretch, since: ms when the current stretch began, 0 = paused }
+   Elapsed time = acc + (now - since). Only time while the page was alive is ever counted. */
+export const runParts = r => (r && r.on ? { acc: r.acc || 0, since: r.since || 0 } : r && r.start ? { acc: 0, since: r.start } : null) // old saves had only { start }
+export const runActive = r => Boolean(runParts(r))
+export const runRunning = r => Boolean(runParts(r) && runParts(r).since)
+export const runElapsed = (r, t) => {
+    const p = runParts(r)
+    return p ? p.acc + (p.since ? Math.max(0, t - p.since) : 0) : 0
+}
+
 export function startSession(user) {
-    if (getStore('studyrun', {}).start) return
-    setStore('studyrun', { start: Date.now() }, {})
+    if (runActive(getStore('studyrun', {}))) return
+    setStore('studyrun', { on: true, acc: 0, since: Date.now() }, {})
     play('studystart')
     publish(user)
 }
 
+// Freeze the clock at time t (default now). Used by the Pause button and by the sleep guard.
+function pauseAt(t, user) {
+    const p = runParts(getStore('studyrun', {}))
+    if (!p || !p.since) return false
+    setStore('studyrun', { on: true, acc: p.acc + Math.max(0, t - p.since), since: 0 }, {})
+    publish(user)
+    return true
+}
+
+export function pauseSession(user) {
+    if (pauseAt(Date.now(), user)) play('uncheck')
+}
+
+export function resumeSession(user) {
+    const p = runParts(getStore('studyrun', {}))
+    if (!p || p.since) return
+    setStore('studyrun', { on: true, acc: p.acc, since: Date.now() }, {})
+    play('studystart')
+    publish(user)
+}
+
+/* Sleep and closed-tab guard. It runs once for the whole app (this file is loaded by the left rail).
+   - A heartbeat records "the page was alive at this moment" every second.
+   - If the page was closed, or the laptop slept, the next heartbeat or the next start-up sees a gap
+     and pauses the session at the last moment the page was alive, so the gap is not counted. */
+const SEEN_KEY = 'studyhub-run-seen'
+const SLEEP_GAP = 90000 // background tabs can be throttled to one tick a minute, so a shorter gap is not sleep
+let lastTick = Date.now()
+
+function publishWhenReady(tries = 0) {
+    const user = getSyncUser()
+    if (user) publish(user)
+    else if (tries < 15) setTimeout(() => publishWhenReady(tries + 1), 2000)
+}
+
+function guardBeat() {
+    const t = Date.now()
+    const gap = t - lastTick
+    const before = lastTick
+    lastTick = t
+    if (!runRunning(getStore('studyrun', {}))) return
+    if (gap > SLEEP_GAP) {
+        if (pauseAt(before, getSyncUser())) {
+            notify({ title: 'Study timer paused', body: 'The device was asleep, so that time was not counted. Press Resume when you are back.', icon: '⏸' })
+            publishWhenReady()
+        }
+        return
+    }
+    try { localStorage.setItem(SEEN_KEY, String(t)) } catch { /* private mode: the guard still works while the page is open */ }
+}
+
+if (typeof window !== 'undefined' && !window.__studyGuard) {
+    window.__studyGuard = true
+    // Start-up: if a session was running when the page was last alive, pause it at that moment
+    try {
+        const seen = Number(localStorage.getItem(SEEN_KEY)) || 0
+        if (seen && runRunning(getStore('studyrun', {})) && pauseAt(seen, null)) publishWhenReady()
+    } catch { /* ignore */ }
+    setInterval(guardBeat, 1000)
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') guardBeat() })
+    window.addEventListener('pagehide', () => {
+        try { if (runRunning(getStore('studyrun', {}))) localStorage.setItem(SEEN_KEY, String(Date.now())) } catch { /* ignore */ }
+    })
+}
+
 export function stopSession(user) {
-    const start = getStore('studyrun', {}).start
-    if (!start) return
-    const minutes = Math.min(MAX_SESSION, Math.floor((Date.now() - start) / 60000))
+    const r = getStore('studyrun', {})
+    if (!runActive(r)) return
+    const minutes = Math.min(MAX_SESSION, Math.floor(runElapsed(r, Date.now()) / 60000))
     const today = todayISO()
     const before = getStore('studygroup', STUDY_DEFAULT).days[today] || 0
     setStore('studyrun', {}, {})
@@ -369,6 +446,7 @@ function ProfileView({ r, isMe, cheerCount, onCheer, onClose }) {
                         <h2 style={{ margin: 0 }}>{r.name}{isMe ? ' (you)' : ''}</h2>
                         {p.focus && <p className="muted" style={{ margin: 0 }}>📖 {p.focus}</p>}
                         {r.on && <p style={{ margin: 0 }}>🟢 studying now</p>}
+                        {r.paused && <p style={{ margin: 0 }}>⏸ paused</p>}
                     </div>
                 </div>
                 {p.bio && <p>{p.bio}</p>}
@@ -688,7 +766,8 @@ export default function StudyGroup() {
     const ws = iso(weekStart(now))
     return members.map(m => {
             const on = Boolean(m.studying) && t - m.studying < ONLINE_MAX
-            const live = on ? Math.min(MAX_SESSION, Math.floor((t - m.studying) / 60000)) : 0
+            const paused = !m.studying && typeof m.paused === 'number' && t - (m.updatedAt || 0) < ONLINE_MAX
+            const live = on ? Math.min(MAX_SESSION, Math.floor((t - m.studying) / 60000)) : paused ? Math.min(MAX_SESSION, Math.floor(m.paused / 60000)) : 0
             const base = m.days || {}
             const days = { ...base, [today]: (base[today] || 0) + live }
             const { streak, best } = streakOf(days, today)
@@ -696,7 +775,7 @@ export default function StudyGroup() {
             const tp = m.todos || {}
             const mine = m.uid === uid
             return {
-                uid: m.uid, name: m.name || '?', on, live, days, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live,
+                uid: m.uid, name: m.name || '?', on, paused, live, days, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live,
                 streak, best, todos: plannedToday, profile: m.profile || {},
                 plan: mine ? planOf(todos[ws]) : tp.week === ws ? tp.plan || {} : null, // your own plan is always live
                 appStreak: mine ? stats.streak : tp.streak || 0,
@@ -896,7 +975,9 @@ const removeShare = id => {
     const sharedByMe = new Set(shares.filter(x => x.owner === uid).map(x => x.id))
     const viewed = viewing ? shares.find(x => x.id === viewing) : null
     const viewedOwner = viewed ? (viewed.owner === uid ? 'you' : (members.find(m => m.uid === viewed.owner) || { name: 'a friend' }).name) : ''
-    const elapsed = run.start ? now.getTime() - run.start : 0
+    const sessionOn = runActive(run)
+    const running = runRunning(run)
+    const elapsed = runElapsed(run, now.getTime())
     const liveMin = Math.min(MAX_SESSION, Math.floor(elapsed / 60000))
     const myToday = (s.days[today] || 0) + liveMin
     const mine = streakOf({ ...s.days, [today]: myToday }, today)
@@ -924,11 +1005,14 @@ const removeShare = id => {
 
             <section className="card sg-timer" aria-label="Study timer">
                 <div>
-                    <p className="muted small">{run.start ? '📖 You are studying' : 'Ready when you are'}</p>
-                    <div className={'sg-clock' + (run.start ? ' on' : '')}>{hms(elapsed)}</div>
-                    <button className={'btn ' + (run.start ? 'danger' : 'primary')} onClick={() => (run.start ? stopSession(user) : startSession(user))}>
-                        {run.start ? 'Stop and save' : 'Start studying'}
-                    </button>
+                    <p className="muted small">{running ? '📖 You are studying' : sessionOn ? '⏸ Paused' : 'Ready when you are'}</p>
+                    <div className={'sg-clock' + (running ? ' on' : '')}>{hms(elapsed)}</div>
+                    <div className="row" style={{ gap: 8 }}>
+                        {!sessionOn && <button className="btn primary" onClick={() => startSession(user)}>Start studying</button>}
+                        {running && <button className="btn" onClick={() => pauseSession(user)}>Pause</button>}
+                        {sessionOn && !running && <button className="btn primary" onClick={() => resumeSession(user)}>Resume</button>}
+                        {sessionOn && <button className="btn danger" onClick={() => stopSession(user)}>Stop and save</button>}
+                    </div>
                 </div>
                 <div className="sg-stats">
                     <div><b>{fmtMin(myToday)}</b><span>today</span></div>
@@ -961,11 +1045,11 @@ const removeShare = id => {
                         </div>
                     </div>
                     <p className="sg-coach">{coach}</p>
-                    {rows.some(r => r.on) && (
+                    {rows.some(r => r.on || r.paused) && (
                         <div className="sg-live" aria-label="Studying now">
                             <span className="sg-pulse" aria-hidden="true" />
-                            {rows.filter(r => r.on).map(r => (
-                                <button key={r.uid} className="sg-chip" onClick={() => setProfileId(r.uid)}><Avatar name={r.name} photo={r.profile.photo} size={20} /> {r.uid === uid ? 'You' : r.name} · {fmtMin(r.live)}</button>
+                            {rows.filter(r => r.on || r.paused).map(r => (
+                                <button key={r.uid} className="sg-chip" onClick={() => setProfileId(r.uid)}><Avatar name={r.name} photo={r.profile.photo} size={20} /> {r.uid === uid ? 'You' : r.name} · {r.paused ? '⏸ ' : ''}{fmtMin(r.live)}</button>
                             ))}
                         </div>
                     )}
@@ -991,7 +1075,7 @@ const removeShare = id => {
                                     <Avatar name={r.name} photo={r.profile.photo} size={48} />
                                     <div className="grow">
                                         <b>{r.name}{r.uid === uid ? ' (you)' : ''}</b>
-                                        <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} today` : ''}</small>
+                                        <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : r.paused ? ' · ⏸ paused' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} today` : ''}</small>
                                     </div>
                                 </button>
                                 <div className="sg-chips">

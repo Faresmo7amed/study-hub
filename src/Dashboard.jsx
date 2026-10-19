@@ -582,6 +582,7 @@ function Pomodoro() {
     const [running, setRunning] = useState(false)
     const [focus, , updateFocus] = useStore('focus', {})
     const endRef = useRef(0)
+    const tickRef = useRef(0) // last moment the page was alive while the timer ran
     const total = (mode === 'focus' ? mins : 5) * 60
 
     useEffect(() => {
@@ -604,7 +605,16 @@ function Pomodoro() {
             }
         }
         const id = setInterval(() => {
-            const remain = Math.max(0, Math.round((endRef.current - Date.now()) / 1000))
+            const t = Date.now()
+            if (t - tickRef.current > 90000) {
+                // The device slept (a normal tab ticks at least every minute): freeze at the last moment we were alive
+                setLeft(Math.max(0, Math.round((endRef.current - tickRef.current) / 1000)))
+                setRunning(false)
+                notify({ title: 'Focus timer paused', body: 'The device was asleep, so that time was not counted.', icon: '⏸' })
+                return
+            }
+            tickRef.current = t
+            const remain = Math.max(0, Math.round((endRef.current - t) / 1000))
             setLeft(remain)
             if (remain === 0) finish()
         }, 250)
@@ -618,7 +628,10 @@ function Pomodoro() {
     }, [running, left, mode])
 
     const toggle = () => {
-        if (!running) endRef.current = Date.now() + left * 1000
+        if (!running) {
+            endRef.current = Date.now() + left * 1000
+            tickRef.current = Date.now()
+        }
         setRunning(!running)
     }
     const reset = () => {

@@ -27,6 +27,7 @@ const subscribe = fn => {
     subs.add(fn)
     return () => subs.delete(fn)
 }
+export const getSyncUser = () => state.user
 export const useSyncState = () => useSyncExternalStore(subscribe, () => state)
 
 /* ---------- one operation at a time ---------- */
