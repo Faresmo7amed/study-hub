@@ -306,7 +306,7 @@ function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }
     const goto = linked || mirrored
     const status = effStatus(t, maps)
     return (
-        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${goto ? ' linked' : ''}`}
+        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${goto ? ' linked' : ''}${t.icon ? ' has-ic' : ''}`}
             onDragOver={e => { if (onMoveTo) e.preventDefault() }}
             onDrop={e => { if (!onMoveTo) return; e.preventDefault(); onMoveTo(e.dataTransfer.getData('text/plain'), t.id) }}>
             {onMoveTo && <span className="rm-drag" draggable onDragStart={e => e.dataTransfer.setData('text/plain', t.id)} title="Drag to reorder" aria-hidden="true">⠿</span>}
@@ -314,8 +314,9 @@ function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }
                 title={linked ? 'Done automatically when the linked roadmap is finished' : status === 'done' ? 'Mark as not done' : 'Mark as done'}
                 aria-label={`Toggle ${t.title || 'item'} done`} aria-pressed={status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
             {goto && <button className="rm-go" onClick={() => onGoRef(goto.id)} title={`Open the ${goto.title} roadmap`} aria-label={`Open the ${goto.title} roadmap`}>↗</button>}
+            {t.icon && <span className="rm-ic" aria-hidden="true"><Icon value={t.icon} size={n ? 20 : 16} /></span>}
             <button className="rm-body" onClick={() => onOpen(t.id)}>
-                <b>{n ? n + '. ' : ''}{t.icon && <span className="rm-ic"><Icon value={t.icon} size={n ? 18 : 15} /></span>}{t.title || 'Untitled'}</b>
+                <b>{n ? n + '. ' : ''}{t.title || 'Untitled'}</b>
                 {n && (t.when || t.est > 0) && <em>{[t.when, t.est > 0 && `${t.est} h`].filter(Boolean).join(' · ')}</em>}
                 {n && t.desc && <small>{t.desc}</small>}
                 {goto && <span className="rm-ref">↗ {goto.title}</span>}
@@ -409,7 +410,8 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
 
             {topText('title', p ? 'Subtopic title' : 'Topic title', { className: 'rm-h', autoFocus: !t.title })}
             <div className="rm-lb">Icon</div>
-            <IconPicker value={t.icon} allowNone onChange={v => api.patch(t.id, { icon: v })} />   
+            <IconPicker value={t.icon} allowNone onChange={v => api.patch(t.id, { icon: v })} />
+            {t.icon && <button className="btn sm" style={{ marginTop: 6 }} onClick={() => api.patch(t.id, { icon: '' })}>Remove icon</button>}
             <div className="row" style={{ marginTop: 8 }}>
                 <div className="grow">{topText('desc', 'Short description')}</div>
                 <div style={{ width: 140 }}>{topText('when', 'Timeframe')}</div>
@@ -678,6 +680,7 @@ export default function Roadmap() {
     const [settings, , updateSettings] = useStore('settings', { dailyGoal: 3 })
     const [sel, setSel] = useState(null)
     const [query, setQuery] = useState('')
+    const [mapQuery, setMapQuery] = useState('') // filters the roadmap tabs, not the topics
     const [pf, setPf] = useState(null)
     const [hideSubs, setHideSubs] = useState(false)
     const [backup, setBackup] = useState(false)
@@ -999,14 +1002,23 @@ export default function Roadmap() {
 
             <div className="rm-tabbar">
                 <div className="rm-tabs" role="tablist" aria-label="Roadmaps">
-                    {store.order.filter(id => maps[id]).map(id => (
+                    {store.order.filter(id => maps[id] && (maps[id].title || 'Untitled').toLowerCase().includes(mapQuery.trim().toLowerCase())).map(id => (
                         <button key={id} role="tab" aria-selected={id === activeId} className={'rm-tab' + (id === activeId ? ' on' : '')} onClick={() => goRoadmap(id)}>
                             <span className="rm-tabname">{maps[id].title || 'Untitled'}</span>
                             <small>{mapProgress(maps[id], maps).pct}%</small>
                         </button>
                     ))}
+                    {mapQuery.trim() && !store.order.some(id => maps[id] && (maps[id].title || 'Untitled').toLowerCase().includes(mapQuery.trim().toLowerCase())) && <span className="muted small">No roadmap matches</span>}
                     <button className="rm-tab rm-newtab" onClick={() => setCreating(true)}>+ New roadmap</button>
                 </div>
+                <input className="rm-search rm-mapsearch" type="search" value={mapQuery} onChange={e => setMapQuery(e.target.value)} placeholder="Search roadmaps" aria-label="Search roadmaps"
+                    onKeyDown={e => {
+                        if (e.key === 'Escape') setMapQuery('')
+                        if (e.key === 'Enter') {
+                            const hit = store.order.find(id => maps[id] && (maps[id].title || 'Untitled').toLowerCase().includes(mapQuery.trim().toLowerCase()))
+                            if (hit) goRoadmap(hit)
+                        }
+                    }} />
                 <button ref={menuBtn} className="rm-tab rm-newtab rm-more" onClick={toggleMenu} aria-label="Roadmap actions" aria-haspopup="menu" aria-expanded={Boolean(menu)}>⋯</button>
             </div>
             {menu && createPortal(
@@ -1135,7 +1147,7 @@ const CSS = `
 .rm{max-width:1600px;margin:0 auto;padding:20px 20px 120px}
 .rm-head{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding-bottom:14px;border-bottom:1px solid var(--ln)}
 .rm-title{border:0!important;background:none!important;font:700 26px var(--head)!important;padding:2px 4px!important;flex:1 1 280px;min-width:0}
-.rm-search{width:150px!important}
+.rm-search{width:150px!important}.rm-mapsearch{flex:none}
 .rm-legend{flex:1 1 100%;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .rm-tabbar{display:flex;gap:6px;align-items:center;padding:2px 0 12px;margin-bottom:6px}
 .rm-tabs{display:flex;gap:6px;align-items:center;overflow-x:auto;flex:1;min-width:0;padding-bottom:2px;scrollbar-width:thin}
@@ -1211,5 +1223,9 @@ const CSS = `
 .rm-view .rm-body,.rm-view .rm-dm,.rm-view .rm-ch{cursor:default}
 .p-must,.p-rec,.p-nice,.p-opt,.p-adv{border-color:var(--pc);background:color-mix(in srgb,var(--pc) 14%,var(--sf))}
 .p-adv{--pc:var(--c-adv);border-width:3px;border-style:double}
-.rm-ic{margin-right:6px;display:inline-block;vertical-align:-3px}
+.rm-ic{position:absolute;top:8px;right:34px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.rm-ic>*{max-width:100%;max-height:100%;object-fit:contain}
+.rm-node.linked .rm-ic{right:60px}
+.rm-node.has-ic .rm-body b{padding-right:54px}
+.rm-node.linked.has-ic .rm-body b{padding-right:80px}
 `
