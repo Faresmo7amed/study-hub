@@ -161,6 +161,12 @@ export async function setGroupGoal(code, minutes) {
     await withTimeout(F.updateDoc(F.doc(db, 'groups', code), { goal: minutes }))
 }
 
+// Group focus block: { start, min, by }, or null to cancel it. Only the owner can do this (the rules check it)
+export async function setGroupBlock(code, block) {
+    const { F, db } = await load()
+    await withTimeout(F.updateDoc(F.doc(db, 'groups', code), { block: block || F.deleteField() }))
+}
+
 // groups/{code}/cheers/{from_to}   { from, to, kind, n, at }
 export async function saveCheer(code, id, cheer) {
     const { F, db } = await load()

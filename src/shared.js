@@ -42,10 +42,10 @@ export const getStore = (key, initial) => read(key, initial)
   Everything else (theme, backup reminder, fired reminders, the sync bookkeeping itself) stays on the device.
 */
 // 'roadmap' is the old single-roadmap key. It is still synced so that other devices can migrate it to 'roadmaps'.
-export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps', 'studygroup']
+export const SYNC_KEYS = ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps', 'studygroup', 'titles', 'recurring']
 
 // Default of the synced "studygroup" key. It lives here so every file that reads the key agrees on its shape.
-export const STUDY_DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0, profile: {}, celebrated: {}, shared: [] }
+export const STUDY_DEFAULT = { name: '', groups: [], active: '', days: {}, total: 0, profile: {}, celebrated: {}, shared: [], subjects: [], log: [], goalMin: 0 }
 
 const changeHooks = new Set()
 export const onStoreChange = fn => {
@@ -321,6 +321,60 @@ export const BADGES = [
     { id: 'focus', icon: '🍅', name: 'Deep focus', desc: 'Complete 10 focus sessions', test: s => s.sessions >= 10 },
     { id: 'lvl5', icon: '🚀', name: 'Level 5', desc: 'Reach level 5', test: s => s.level.level >= 5 },
 ]
+
+/* ============================================================
+   Monthly titles
+   - a day is "active" when you finished a todo, finished a focus session, or studied at least `minStudy` minutes
+   - the number of active days in a month (they do not have to be consecutive) decides the title
+   - the top title needs 30 active days (every day, in a month shorter than 30 days)
+   ============================================================ */
+export const MONTH_TIERS = [
+    { need: 5, icon: '✨', name: 'Spark', color: '#4cc9f0' },
+    { need: 10, icon: '🧗', name: 'Climber', color: '#3ddc97' },
+    { need: 15, icon: '⚙️', name: 'Grinder', color: '#ffb454' },
+    { need: 20, icon: '🛡️', name: 'Veteran', color: '#7c6cff' },
+    { need: 25, icon: '🏆', name: 'Champion', color: '#ff6b8b' },
+    { need: 30, icon: '👑', name: 'Legend', color: '#ffd24a' },
+]
+export const monthKey = d => iso(d).slice(0, 7)
+export const monthLength = ym => new Date(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0).getDate()
+
+export function activeDaysIn(ym, activity, focus, studyDays, minStudy = 30) {
+    const days = new Set()
+    Object.keys(activity || {}).forEach(k => { if (k.startsWith(ym) && activity[k] > 0) days.add(k) })
+    Object.keys(focus || {}).forEach(k => { if (k.startsWith(ym) && focus[k] > 0) days.add(k) })
+    Object.keys(studyDays || {}).forEach(k => { if (k.startsWith(ym) && studyDays[k] >= minStudy) days.add(k) })
+    return days.size
+}
+
+// tier 0 = no title yet. need is capped by the length of the month, so February can still reach Legend.
+export function tierState(count, ym) {
+    const cap = monthLength(ym)
+    const needs = MONTH_TIERS.map(t => Math.min(t.need, cap))
+    let tier = 0
+    needs.forEach((n, i) => { if (count >= n) tier = i + 1 })
+    const next = tier < MONTH_TIERS.length ? MONTH_TIERS[tier] : null
+    const nextNeed = next ? needs[tier] : null
+    const prevNeed = tier > 0 ? needs[tier - 1] : 0
+    return {
+        tier, count, cur: tier > 0 ? MONTH_TIERS[tier - 1] : null, next, nextNeed, left: next ? nextNeed - count : 0,
+        pct: next ? Math.round((100 * (count - prevNeed)) / Math.max(1, nextNeed - prevNeed)) : 100, needs,
+    }
+}
+
+// Every past and current month that earned a title, newest first
+export function monthTrophies(activity, focus, studyDays, minStudy = 30) {
+    const months = new Set()
+    ;[activity, focus, studyDays].forEach(o => Object.keys(o || {}).forEach(k => months.add(k.slice(0, 7))))
+    return [...months].sort().reverse()
+        .map(ym => ({ ym, ...tierState(activeDaysIn(ym, activity, focus, studyDays, minStudy), ym) }))
+        .filter(t => t.tier > 0)
+}
+
+// A game-style reward card. The host that shows it lives in Rewards.jsx (mounted once for the whole app).
+export function reward({ icon = '🎯', title, body = '', kind = 'goal', color = '' }) {
+    window.dispatchEvent(new CustomEvent('studyhub:reward', { detail: { id: uid(), icon, title, body, kind, color } }))
+}
 
 /* ============================================================
    Todos from anywhere in the app (used by the Roadmap page)

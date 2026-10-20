@@ -1,4 +1,4 @@
-import { computeStats, confetti, getStore, notify, setStore, todayISO } from './shared'
+import { TYPES, addDays, computeStats, confetti, dayIndex, emptyWeek, getStore, iso, notify, reward, setStore, todayISO, uid, weekStart } from './shared'
 import { play } from './sound'
 
 export function toggleTodo(key, day, id, el) {
@@ -29,6 +29,7 @@ export function toggleTodo(key, day, id, el) {
         play('uncheck')
         return
     }
+    const xp = (TYPES[todo.type] || TYPES.task).xp
     const goal = getStore('settings', { dailyGoal: 3 }).dailyGoal || 3
     const dayList = getStore('todos', {})[key][day]
     const firstOfDay = doneBefore === 0 && focusToday === 0
@@ -41,12 +42,36 @@ export function toggleTodo(key, day, id, el) {
         play('goal')
     } else if (dayList.every(t => t.done)) {
         play('complete')
+        reward({ icon: '🏁', title: 'Day cleared', body: 'Every todo of the day is done.', kind: 'goal' })
     } else if (['project', 'course', 'book'].includes(todo.type)) {
         play('complete')
     } else {
         play('check')
     }
-    if (reachedGoal) notify({ title: 'Daily goal reached', body: `${goal} todos done today.`, icon: '🎯' })
+    if (reachedGoal) reward({ icon: '🎯', title: 'Daily goal reached', body: `${goal} todos done today.`, kind: 'goal' })
+    else if (!dayList.every(t => t.done)) reward({ icon: '✅', title: `+${xp} XP`, body: todo.text.slice(0, 40), kind: 'task' })
+}
+
+// Move yesterday's unfinished todos to today (they move, they are not copied). Handles the week boundary.
+export function carryYesterday() {
+    const now = new Date()
+    const y = addDays(now, -1)
+    const yKey = iso(weekStart(y))
+    const yDay = dayIndex(y)
+    const tKey = iso(weekStart(now))
+    const tDay = dayIndex(now)
+    const open = ((getStore('todos', {})[yKey] || emptyWeek())[yDay] || []).filter(t => !t.done)
+    if (!open.length) return 0
+    const ids = new Set(open.map(t => t.id))
+    setStore('todos', cur => {
+        const next = { ...cur }
+        next[yKey] = (next[yKey] || emptyWeek()).map((list, i) => (i === yDay ? list.filter(t => !ids.has(t.id)) : list))
+        const week = (next[tKey] || emptyWeek()).map(list => [...list])
+        open.forEach(t => week[tDay].push({ ...t, id: uid() }))
+        next[tKey] = week
+        return next
+    }, {})
+    return open.length
 }
 export const EVENT_COLORS = ['#7c6cff', '#3ddc97', '#ffb454', '#ff6b8b', '#4cc9f0', '#a3a3b8']
 
