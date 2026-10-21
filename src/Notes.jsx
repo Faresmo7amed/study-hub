@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { clamp, notify, uid, useStore } from './shared'
+import { addTodoToday, clamp, getStore, notify, setStore, uid, useStore } from './shared'
 import { play } from './sound'
 
 /* ============================================================
@@ -37,6 +37,76 @@ const seedNotes = () => {
         { ...blank(), id: 'n2', title: 'Debugging checklist', body: '1. Reproduce the bug\n2. Read the error out loud\n3. Form a hypothesis\n4. Change one thing at a time\n5. Write down the root cause', color: 'blue', labels: ['Study'], created: now - 2000 },
         { ...blank(), id: 'n3', title: 'Project idea', body: 'A flashcards app that turns my own notes into quiz questions. Start with a simple spaced repetition schedule.\nhttps://developer.mozilla.org', color: 'green', labels: ['Ideas'], created: now - 1000 },
     ]
+}
+
+
+/* ---------- review reminders, templates, markdown ---------- */
+const REVIEW_STEPS = [1, 3, 7, 14, 30] // days until the next review, growing each time (spaced repetition)
+const reviewDue = n => Boolean(n.review && n.review.due <= Date.now())
+const reviewIn = (days, step) => ({ due: Date.now() + days * 86400000, step, notified: false })
+const fmtDue = ts => {
+    const d = Math.ceil((ts - Date.now()) / 86400000)
+    return d <= 0 ? 'due now' : d === 1 ? 'tomorrow' : `in ${d} days`
+}
+
+const TEMPLATES = [
+    { name: 'Daily study log', icon: '📓', make: () => ({ title: 'Study log · ' + new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), body: 'Goal today:\n\nWhat I studied:\n\nWhat I understood:\n\nWhat is still unclear:\n\nTomorrow:\n' }) },
+    { name: 'Cornell notes', icon: '🧾', make: () => ({ title: 'Topic', body: 'Questions / cues:\n- \n\nNotes:\n\n\nSummary in two sentences:\n' }) },
+    { name: 'Bug write-up', icon: '🐞', make: () => ({ title: 'Bug: ', body: 'Expected:\n\nActual:\n\nSteps to reproduce:\n1. \n\nHypothesis:\n\nRoot cause:\n\nFix:\n\nHow to spot it next time:\n' }) },
+    { name: 'Revision checklist', icon: '✅', make: () => ({ title: 'Revision checklist', items: ['Skim the headings', 'Write the key points from memory', 'Do five practice questions', 'Fix what I got wrong', 'Explain it out loud'].map(t => ({ id: uid(), t, done: false })) }) },
+]
+
+const mdOf = n => {
+    const lines = [`# ${n.title || 'Untitled note'}`]
+    if (n.labels.length) lines.push(`Labels: ${n.labels.join(', ')}`)
+    lines.push('')
+    if (n.items) n.items.filter(i => i.t.trim()).forEach(i => lines.push(`- [${i.done ? 'x' : ' '}] ${i.t}`))
+    else if (n.body.trim()) lines.push(n.body.trim())
+    return lines.join('\n')
+}
+const download = (name, text) => {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }))
+    a.download = name
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+}
+// Notes are separated by a line of "---". Without separators, every "# Heading" starts a new note.
+const parseMd = (text, fallback) => {
+    let blocks = text.replace(/\r/g, '').split(/\n-{3,}[ \t]*(?:\n|$)/).map(b => b.trim()).filter(Boolean)
+    if (blocks.length === 1 && (blocks[0].match(/^# /gm) || []).length > 1) blocks = blocks[0].split(/^(?=# )/m).map(b => b.trim()).filter(Boolean)
+    return blocks.map(b => {
+        const lines = b.split('\n')
+        let title = fallback
+        if (/^# /.test(lines[0])) title = lines.shift().slice(2).trim()
+        let labels = []
+        const li = lines.findIndex(l => /^labels:/i.test(l.trim()))
+        if (li >= 0 && li < 2) labels = lines.splice(li, 1)[0].replace(/^\s*labels:/i, '').split(',').map(x => x.trim()).filter(Boolean)
+        const body = lines.join('\n').trim()
+        const rows = body.split('\n').filter(l => l.trim())
+        const isList = rows.length > 0 && rows.every(l => /^\s*[-*] \[[ xX]\] /.test(l))
+        const n = { ...blank(), title, labels }
+        if (isList) n.items = rows.map(l => ({ id: uid(), t: l.replace(/^\s*[-*] \[[ xX]\] /, ''), done: /\[[xX]\]/.test(l) }))
+        else n.body = body
+        return n
+    })
+}
+
+// A note can point at a topic of a roadmap. These read the roadmaps on demand, so Notes does not depend on the Roadmap page.
+const roadmapsNow = () => getStore('roadmaps', { order: [], maps: {} }) || { order: [], maps: {} }
+const topicTitle = link => {
+    const m = link && roadmapsNow().maps[link.map]
+    if (!m) return ''
+    for (const t of m.topics || []) {
+        if (t.id === link.topic) return t.title || 'Untitled'
+        const sub = (t.subs || []).find(x => x.id === link.topic)
+        if (sub) return sub.title || 'Untitled'
+    }
+    return ''
+}
+const openLinked = link => {
+    setStore('roadmaps', cur => (cur && cur.maps && cur.maps[link.map] ? { ...cur, active: link.map } : cur), { order: [], maps: {} })
+    window.location.hash = '/roadmap'
 }
 
 const URL_RE = /(https?:\/\/[^\s]+)/g
@@ -79,8 +149,9 @@ function AutoText({ value, onChange, placeholder, autoFocus }) {
 }
 
 /* ---------- the actions row used by cards, the composer and the editor ---------- */
-function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onDuplicate, onRestore, onDeleteForever }) {
+function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onDuplicate, onRestore, onDeleteForever, onSendTodos, onExport }) {
     const [pop, setPop] = useState(null)
+    const [linkMap, setLinkMap] = useState((note.link && note.link.map) || '')
     const open = kind => e => setPop({ kind, anchor: e.currentTarget })
     const close = () => setPop(null)
     const toggleLabel = l => {
@@ -103,6 +174,10 @@ function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onD
             <button className={'icon-btn' + (note.pinned ? ' on' : '')} onClick={() => { play('pin'); onChange({ ...note, pinned: !note.pinned, archived: false }) }} title={note.pinned ? 'Unpin' : 'Pin'} aria-pressed={note.pinned} aria-label="Pin">📌</button>
             <button className="icon-btn" onClick={open('color')} title="Colour" aria-label="Change colour">🎨</button>
             <button className="icon-btn" onClick={open('label')} title="Labels" aria-label="Edit labels">🏷️</button>
+            <button className={'icon-btn' + (note.link ? ' on' : '')} onClick={open('link')} title="Link to a roadmap topic" aria-label="Link to a roadmap topic">🗺️</button>
+            <button className={'icon-btn' + (note.review ? ' on' : '')} onClick={open('review')} title="Review reminder" aria-label="Review reminder">🔁</button>
+            {onSendTodos && note.items && note.items.some(i => !i.done && !i.sent && i.t.trim()) && <button className="icon-btn" onClick={onSendTodos} title="Add open items to today's todos" aria-label="Add open items to today's todos">📅</button>}
+            {onExport && <button className="icon-btn" onClick={onExport} title="Export as Markdown" aria-label="Export as Markdown">⬇</button>}
             {onDuplicate && <button className="icon-btn" onClick={onDuplicate} title="Duplicate" aria-label="Duplicate">⧉</button>}
             {onArchive && <button className="icon-btn" onClick={onArchive} title={note.archived ? 'Unarchive' : 'Archive'} aria-label="Archive">🗄️</button>}
             {onTrash && <button className="icon-btn" onClick={onTrash} title="Move to trash" aria-label="Delete">🗑️</button>}
@@ -116,6 +191,43 @@ function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onD
                     </div>
                 </Pop>
             )}
+            {pop && pop.kind === 'review' && (
+                <Pop anchor={pop.anchor} onClose={close} width={230}>
+                    <p className="muted small kp-pad">Remind me to review this note</p>
+                    {REVIEW_STEPS.slice(0, 4).map((d, i) => (
+                        <button key={d} className="kp-item kp-pick" onClick={() => { play('tick'); onChange({ ...note, review: reviewIn(d, i) }); close() }}>{d === 1 ? 'Tomorrow' : `In ${d} days`}</button>
+                    ))}
+                    {note.review && <p className="muted small kp-pad">Now: {fmtDue(note.review.due)}</p>}
+                    {note.review && <button className="kp-item kp-pick" onClick={() => { onChange({ ...note, review: null }); close() }}>Remove reminder</button>}
+                </Pop>
+            )}
+            {pop && pop.kind === 'link' && (() => {
+                const store = roadmapsNow()
+                const ids = (store.order || []).filter(id => store.maps[id])
+                const mapId = store.maps[linkMap] ? linkMap : ''
+                const topics = mapId ? store.maps[mapId].topics.flatMap(t => [{ id: t.id, label: t.title || 'Untitled' }, ...(t.subs || []).map(x => ({ id: x.id, label: '↳ ' + (x.title || 'Untitled') }))]) : []
+                return (
+                    <Pop anchor={pop.anchor} onClose={close} width={260}>
+                        <p className="muted small kp-pad">Link to a roadmap topic</p>
+                        {!ids.length ? <p className="muted small kp-pad">No roadmaps yet. Open the Roadmap page once, then come back.</p> : (
+                            <div className="kp-pad" style={{ display: 'grid', gap: 6 }}>
+                                <select value={mapId} onChange={e => setLinkMap(e.target.value)} aria-label="Roadmap">
+                                    <option value="">Choose a roadmap</option>
+                                    {ids.map(id => <option key={id} value={id}>{store.maps[id].title || 'Untitled roadmap'}</option>)}
+                                </select>
+                                {mapId && (
+                                    <select value={note.link && note.link.map === mapId ? note.link.topic : ''} aria-label="Topic"
+                                        onChange={e => { if (e.target.value) { play('tick'); onChange({ ...note, link: { map: mapId, topic: e.target.value } }); close() } }}>
+                                        <option value="">Choose a topic</option>
+                                        {topics.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
+                                    </select>
+                                )}
+                                {note.link && <button className="btn sm ghost" onClick={() => { onChange({ ...note, link: null }); close() }}>Remove link</button>}
+                            </div>
+                        )}
+                    </Pop>
+                )
+            })()}
             {pop && pop.kind === 'label' && (
                 <Pop anchor={pop.anchor} onClose={close} width={230}>
                     <p className="muted small kp-pad">Label note</p>
@@ -202,6 +314,7 @@ function NoteEditor({ note, onChange, autoFocus }) {
 function Composer({ labels, onAdd, onNewLabel }) {
     const [open, setOpen] = useState(false)
     const [draft, setDraft] = useState(blank)
+    const [tpl, setTpl] = useState(null)
     const ref = useRef(null)
 
     const finish = () => {
@@ -236,6 +349,15 @@ function Composer({ labels, onAdd, onNewLabel }) {
             <div className="kp-compose card" ref={ref}>
                 <button className="kp-fake" onClick={() => setOpen(true)}>Take a note…</button>
                 <button className="icon-btn" onClick={() => { setDraft(toList(blank())); setOpen(true) }} title="New list" aria-label="New list">☑</button>
+                <button className="icon-btn" onClick={e => setTpl(e.currentTarget)} title="New note from a template" aria-label="New note from a template">▤</button>
+                {tpl && (
+                    <Pop anchor={tpl} onClose={() => setTpl(null)} width={220}>
+                        <p className="muted small kp-pad">Start from a template</p>
+                        {TEMPLATES.map(t => (
+                            <button key={t.name} className="kp-item kp-pick" onClick={() => { setDraft({ ...blank(), ...t.make() }); setTpl(null); setOpen(true) }}>{t.icon} {t.name}</button>
+                        ))}
+                    </Pop>
+                )}
             </div>
         )
     }
@@ -279,6 +401,20 @@ function NoteCard({ note, labels, onOpen, onChange, onNewLabel, actions }) {
                 )}
                 {isBlank(note) && <p className="muted small">Empty note</p>}
                 {note.labels.length > 0 && <div className="kp-labels">{note.labels.map(l => <span key={l} className="kp-chip">{l}</span>)}</div>}
+                {(note.link || note.review) && !note.trashed && (
+                    <div className="kp-labels">
+                        {note.link && topicTitle(note.link) && <button className="kp-chip kp-linkchip" onClick={e => { e.stopPropagation(); openLinked(note.link) }} title="Open this roadmap">🗺️ {topicTitle(note.link)}</button>}
+                        {note.review && (reviewDue(note) ? (
+                            <button className="kp-chip kp-due" title="Mark as reviewed and schedule the next review"
+                                onClick={e => {
+                                    e.stopPropagation()
+                                    const step = Math.min((note.review.step || 0) + 1, REVIEW_STEPS.length - 1)
+                                    play('check')
+                                    onChange({ ...note, review: reviewIn(REVIEW_STEPS[step], step) })
+                                }}>🔁 Review due · mark reviewed ✓</button>
+                        ) : <span className="kp-chip">🔁 {fmtDue(note.review.due)}</span>)}
+                    </div>
+                )}
             </div>
             <Toolbar note={note} labels={labels} onChange={(n, nl) => { onChange(n); if (nl) onNewLabel(nl) }} {...actions} />
         </article>
@@ -339,6 +475,15 @@ export default function Notes() {
     const [layout, setLayout] = useState('grid')
     const [editId, setEditId] = useState(null)
     const [showLabels, setShowLabels] = useState(false)
+    const fileRef = useRef(null)
+
+    // Opened from a roadmap topic (see openNote in shared.js)
+    useEffect(() => {
+        if (window.__openNoteId) {
+            setEditId(window.__openNoteId)
+            window.__openNoteId = null
+        }
+    }, [])
 
     // Empty the trash after 7 days
     useEffect(() => {
@@ -380,12 +525,40 @@ export default function Notes() {
         save({ ...n, id: uid(), title: n.title ? n.title + ' (copy)' : '', pinned: false, created: Date.now(), edited: Date.now(), items: n.items ? n.items.map(i => ({ ...i, id: uid() })) : null })
     }
     const forever = id => updateNotes(list => list.filter(n => n.id !== id))
+    // Turn the open items of a checklist into todos for today (each item is sent once)
+    const sendToday = n => {
+        const open = (n.items || []).filter(i => !i.done && !i.sent && i.t.trim())
+        if (!open.length) return
+        open.forEach(i => addTodoToday({ text: i.t.trim(), type: 'task' }))
+        save({ ...n, items: n.items.map(i => (open.includes(i) ? { ...i, sent: true } : i)), edited: Date.now() })
+        play('add')
+        notify({ title: `Added ${open.length} todo${open.length > 1 ? 's' : ''} to today`, body: n.title || 'From your note', icon: '📅' })
+    }
+    const exportNotes = list => {
+        if (!list.length) return notify({ title: 'Nothing to export', body: 'There are no notes in this view.', icon: 'ℹ️' })
+        download(list.length === 1 ? (list[0].title || 'note').replace(/[^\w-]+/g, '-').toLowerCase() + '.md' : 'notes.md', list.map(mdOf).join('\n\n---\n\n'))
+        notify({ title: `Exported ${list.length} note${list.length > 1 ? 's' : ''}`, body: 'Saved as a Markdown file.', icon: '⬇️' })
+    }
+    const importFile = e => {
+        const file = e.target.files && e.target.files[0]
+        e.target.value = ''
+        if (!file) return
+        file.text().then(text => {
+            const made = parseMd(text, file.name.replace(/\.[^.]+$/, ''))
+            if (!made.length) return notify({ title: 'Nothing to import', body: 'The file is empty.', icon: 'ℹ️' })
+            made.forEach(n => n.labels.forEach(addLabel))
+            updateNotes(list => { list.unshift(...made) })
+            play('save')
+            notify({ title: `Imported ${made.length} note${made.length > 1 ? 's' : ''}`, body: file.name, icon: '⬆️' })
+        })
+    }
 
     const q = query.trim().toLowerCase()
     const matches = n => !q || [n.title, n.body, ...(n.items || []).map(i => i.t), ...n.labels].join(' ').toLowerCase().includes(q)
     const inView = n => {
         if (view === 'trash') return !!n.trashed
         if (n.trashed) return false
+        if (view === 'review') return reviewDue(n)
         if (q) return true
         if (view === 'archive') return n.archived
         if (n.archived) return false
@@ -395,7 +568,7 @@ export default function Notes() {
     const shown = useMemo(() => notes.filter(n => inView(n) && matches(n)), [notes, view, query]) // eslint-disable-line react-hooks/exhaustive-deps
     const pinned = shown.filter(n => n.pinned)
     const others = shown.filter(n => !n.pinned)
-    const counts = { archive: notes.filter(n => n.archived && !n.trashed).length, trash: notes.filter(n => n.trashed).length }
+    const counts = { archive: notes.filter(n => n.archived && !n.trashed).length, trash: notes.filter(n => n.trashed).length, review: notes.filter(n => !n.trashed && reviewDue(n)).length }
     const editing = editId && notes.find(n => n.id === editId)
 
     const closeEditor = () => {
@@ -412,10 +585,10 @@ export default function Notes() {
     const cardFor = n => (
         <NoteCard key={n.id} note={n} labels={labels} onOpen={() => !n.trashed && setEditId(n.id)} onChange={save} onNewLabel={addLabel}
             actions={n.trashed ? { onRestore: () => { save({ ...n, trashed: null }); play('undo') }, onDeleteForever: () => { forever(n.id); play('delete') } }
-                : { onArchive: () => archive(n), onTrash: () => trash(n), onDuplicate: () => duplicate(n) }} />
+                : { onArchive: () => archive(n), onTrash: () => trash(n), onDuplicate: () => duplicate(n), onSendTodos: () => sendToday(n) }} />
     )
 
-    const title = view === 'notes' ? 'Notes' : view === 'archive' ? 'Archive' : view === 'trash' ? 'Trash' : view.slice(6)
+    const title = view === 'notes' ? 'Notes' : view === 'review' ? 'Due for review' : view === 'archive' ? 'Archive' : view === 'trash' ? 'Trash' : view.slice(6)
     const nav = (id, icon, label, count) => (
         <button key={id} className={view === id ? 'on' : ''} onClick={() => { setView(id); setQuery('') }}>
             <span aria-hidden="true">{icon}</span> <span className="grow">{label}</span>{count > 0 && <small>{count}</small>}
@@ -429,6 +602,7 @@ export default function Notes() {
                 {nav('notes', '🗒️', 'Notes')}
                 {labels.map(l => nav('label:' + l, '🏷️', l, notes.filter(n => n.labels.includes(l) && !n.trashed && !n.archived).length))}
                 <button onClick={() => setShowLabels(true)}><span aria-hidden="true">✎</span> Edit labels</button>
+                {nav('review', '🔁', 'Due for review', counts.review)}
                 {nav('archive', '🗄️', 'Archive', counts.archive)}
                 {nav('trash', '🗑️', 'Trash', counts.trash)}
             </aside>
@@ -437,6 +611,9 @@ export default function Notes() {
                 <div className="kp-top">
                     <h1>{title}</h1>
                     <input className="kp-search" type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search all notes" aria-label="Search notes" />
+                    <button className="btn sm" onClick={() => exportNotes(shown)} title="Export the notes in this view as Markdown">Export</button>
+                    <button className="btn sm" onClick={() => fileRef.current && fileRef.current.click()} title="Import notes from a Markdown file">Import</button>
+                    <input ref={fileRef} type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden onChange={importFile} />
                     <div className="seg">
                         <button className={'btn sm' + (layout === 'grid' ? ' on' : '')} onClick={() => setLayout('grid')}>Grid</button>
                         <button className={'btn sm' + (layout === 'list' ? ' on' : '')} onClick={() => setLayout('list')}>List</button>
@@ -469,11 +646,13 @@ export default function Notes() {
                     <div className="kp-modal card kp-card" data-c={editing.color} style={cardStyle(editing.color)} role="dialog" aria-label="Edit note">
                         <NoteEditor note={editing} onChange={(n) => save(n)} autoFocus />
                         {editing.labels.length > 0 && <div className="kp-labels">{editing.labels.map(l => <span key={l} className="kp-chip">{l}</span>)}</div>}
+                        {(editing.link || editing.review) && <div className="kp-labels">{editing.link && topicTitle(editing.link) && <button className="kp-chip kp-linkchip" onClick={() => openLinked(editing.link)}>🗺️ {topicTitle(editing.link)}</button>}{editing.review && <span className={'kp-chip' + (reviewDue(editing) ? ' kp-due' : '')}>🔁 Review {fmtDue(editing.review.due)}</span>}</div>}
                         <div className="kp-foot">
                             <Toolbar note={editing} labels={labels} onChange={(n, nl) => { save(n); if (nl) addLabel(nl) }}
                                 onToggleList={() => save(editing.items ? toText(editing) : toList(editing))}
                                 onArchive={() => { archive(editing); setEditId(null) }}
-                                onTrash={() => { trash(editing); setEditId(null) }} onDuplicate={() => duplicate(editing)} />
+                                onTrash={() => { trash(editing); setEditId(null) }} onDuplicate={() => duplicate(editing)}
+                                onSendTodos={() => sendToday(editing)} onExport={() => exportNotes([editing])} />
                             <span className="muted small grow" style={{ textAlign: 'right' }}>Edited {fmtWhen(editing.edited)}</span>
                             <button className="btn sm ghost" onClick={closeEditor}>Close</button>
                         </div>
@@ -486,6 +665,8 @@ export default function Notes() {
 }
 
 const CSS = `
+.kp-pick{width:100%;text-align:left;background:none;border:0;color:inherit;cursor:pointer;font:inherit;padding:7px 12px}.kp-pick:hover{background:var(--sf2)}
+.kp-linkchip,.kp-due{cursor:pointer;font:inherit}.kp-due{border-color:var(--ac);color:var(--ac);font-weight:600}
 .kp{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px;align-items:start}
 .kp-side{position:sticky;top:78px;display:grid;gap:2px}
 .kp-side button{display:flex;align-items:center;gap:10px;border:0;background:none;padding:9px 14px;border-radius:999px;cursor:pointer;text-align:left;color:var(--tx);font-weight:500}

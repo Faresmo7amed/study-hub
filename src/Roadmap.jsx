@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { addTodoToday, confetti, getStore, isHttp, isStored, notify, setStore, uid, useStore } from './shared'
+import { addDays, addTodoToday, confetti, getStore, isHttp, isStored, notify, openNote, setStore, startOfDay, todayISO, uid, useStore } from './shared'
 import { play } from './sound'
 import { Icon, IconPicker } from './Icons'
 import { cleanIcon } from './iconUtils'
@@ -34,6 +34,8 @@ const norm = (t, top = true) => {
     o.mirror = top || !t.mirror || typeof t.mirror.map !== 'string' || typeof t.mirror.topic !== 'string' ? null : { map: t.mirror.map, topic: t.mirror.topic }
     o.est = Math.max(0, Number(t.est) || 0)
     o.icon = cleanIcon(t.icon)
+    o.due = /^\d{4}-\d{2}-\d{2}$/.test(t.due || '') ? t.due : '' // optional deadline
+    o.doneAt = Number(t.doneAt) || 0 // when it was marked done: feeds the pace forecast
     return o
 }
 
@@ -299,6 +301,40 @@ function useConnectors(data, st, hideSubs = false) {
     return { mapRef, rowsRef, mainSvg, subSvg }
 }
 
+
+// What it does: estimates when a roadmap will be finished from how many items you completed in the last 28 days.
+// When to use it: under the progress bar. Items finished before this feature existed have no date, so they are not counted.
+const forecast = (items, st) => {
+    const left = items.filter(t => st(t) !== 'done')
+    const since = Date.now() - 28 * 86400000
+    const recent = items.filter(t => st(t) === 'done' && t.doneAt && t.doneAt >= since).length
+    if (!left.length) return { left: 0, perWeek: 0, date: null }
+    if (!recent) return { left: left.length, perWeek: 0, date: null }
+    const perDay = recent / 28
+    const days = Math.ceil(left.length / perDay)
+    return { left: left.length, perWeek: Math.round(perDay * 7 * 10) / 10, date: days > 730 ? 'in more than two years' : 'around ' + addDays(startOfDay(new Date()), days).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) }
+}
+
+// What it does: turns a roadmap into a Markdown checklist (topics, subtopics, steps, projects, resources, notes).
+const toMarkdown = (data, maps) => {
+    const box = t => (effStatus(t, maps) === 'done' ? '[x]' : '[ ]')
+    const meta = t => [t.when, t.est > 0 && `${t.est} h`, t.due && `due ${t.due}`, PR[t.priority]].filter(Boolean).join(' · ')
+    const out = [`# ${data.title || 'Roadmap'}`, '']
+    data.topics.forEach((t, i) => {
+        out.push(`## ${i + 1}. ${t.title || 'Untitled'} (${STATUS[effStatus(t, maps)]})`)
+        if (t.desc) out.push(`_${t.desc}_`)
+        out.push(`- ${box(t)} ${t.title || 'Untitled'}${meta(t) ? ' · ' + meta(t) : ''}`)
+        t.subs.forEach(x => out.push(`  - ${box(x)} ${x.title || 'Untitled'}${meta(x) ? ' · ' + meta(x) : ''}`))
+        if (t.steps.length) out.push('', '**Steps**', ...t.steps.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}`))
+        if (t.proj.length) out.push('', '**Projects**', ...t.proj.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}${x.desc ? ' · ' + x.desc : ''}`))
+        if (t.res.length) out.push('', '**Resources**', ...t.res.map(x => `- ${x.type}: ${x.url ? `[${x.t || x.url}](${x.url})` : x.t}`))
+        if (t.gate) out.push('', `**Gate:** ${t.gate.name}${t.gate.done ? ' (passed)' : ''}${t.gate.desc ? ' · ' + t.gate.desc : ''}`)
+        if (t.notes) out.push('', t.notes)
+        out.push('')
+    })
+    return out.join('\n')
+}
+
 /* ---------- map pieces ---------- */
 function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }) {
     const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
@@ -318,6 +354,7 @@ function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }
             <button className="rm-body" onClick={() => onOpen(t.id)}>
                 <b>{n ? n + '. ' : ''}{t.title || 'Untitled'}</b>
                 {n && (t.when || t.est > 0) && <em>{[t.when, t.est > 0 && `${t.est} h`].filter(Boolean).join(' · ')}</em>}
+                {t.due && <span className={'rm-due' + (status !== 'done' && t.due < todayISO() ? ' late' : '')}>⏰ {t.due}{status !== 'done' && t.due < todayISO() ? ' · overdue' : ''}</span>}
                 {n && t.desc && <small>{t.desc}</small>}
                 {goto && <span className="rm-ref">↗ {goto.title}</span>}
                 <span className="rm-pr">{PR[t.priority]}</span>
@@ -345,6 +382,21 @@ function Gate({ t, onToggle }) {
 function Row({ id, children, onRemove }) {
     return (
         <div className="rm-it" data-row={id}>{children}<button className="icon-btn" onClick={onRemove} title="Delete" aria-label="Delete">×</button></div>
+    )
+}
+
+// Notes that were linked to this topic from the Notes page
+function LinkedNotes({ topicId }) {
+    const [notes] = useStore('notes', [])
+    const list = (Array.isArray(notes) ? notes : []).filter(n => n.link && n.link.topic === topicId && !n.trashed)
+    if (!list.length) return null
+    return (
+        <div>
+            <div className="rm-lb">Linked notes</div>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+                {list.map(n => <button key={n.id} className="btn sm ghost" onClick={() => openNote(n.id)}>📝 {n.title || 'Untitled note'}</button>)}
+            </div>
+        </div>
     )
 }
 
@@ -419,6 +471,10 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
             <label className="field" style={{ marginTop: 8 }}><span>Estimate (hours)</span>
                 <input type="number" min="0" step="0.5" value={t.est || ''} onChange={e => api.patch(t.id, { est: Math.max(0, Number(e.target.value) || 0) })} />
             </label>
+            <label className="field" style={{ marginTop: 8 }}><span>Deadline (optional)</span>
+                <input type="date" value={t.due || ''} onChange={e => api.patch(t.id, { due: e.target.value })} />
+            </label>
+            <LinkedNotes topicId={t.id} />
             <div>
                 <div className="rm-lb">Linked roadmap</div>
                 <select value={t.ref || ''} aria-label="Linked roadmap" onChange={e => api.setRef(t.id, e.target.value || null)}>
@@ -682,6 +738,13 @@ export default function Roadmap() {
     const [query, setQuery] = useState('')
     const [mapQuery, setMapQuery] = useState('') // filters the roadmap tabs, not the topics
     const [pf, setPf] = useState(null)
+    const [sf, setSf] = useState(null) // status filter: todo | doing | done
+    const [hist, setHist] = useState({ u: 0, r: 0 })
+    const past = useRef([])
+    const future = useRef([])
+    const lastStore = useRef(null)
+    const lastChange = useRef(0)
+    const restoring = useRef(false)
     const [hideSubs, setHideSubs] = useState(false)
     const [backup, setBackup] = useState(false)
     const [creating, setCreating] = useState(false)
@@ -740,7 +803,10 @@ export default function Roadmap() {
             const target = item.mirror && d.maps[item.mirror.map] && d.maps[item.mirror.map].topics.find(x => x.id === item.mirror.topic)
             const own = d.maps[activeId] && locate(d.maps[activeId], item.id)
             const h = target ? { t: target } : own
-            if (h) h.t.status = status
+            if (h) {
+                h.t.status = status
+                h.t.doneAt = status === 'done' ? Date.now() : 0
+            }
         }),
         // Turns an item into its own roadmap. Its subtopics become the topics of the new roadmap and stay
         // connected: ticking one in either roadmap ticks it in both, and the item shows the new roadmap's progress.
@@ -947,10 +1013,68 @@ export default function Roadmap() {
         }
     }, [menu])
 
+    /* ----- undo and redo: snapshots of the whole roadmaps store, edits within 0.7 s count as one step ----- */
+    useEffect(() => {
+        if (restoring.current) {
+            restoring.current = false
+            lastStore.current = store
+            return
+        }
+        if (lastStore.current && lastStore.current !== store) {
+            const t = Date.now()
+            if (t - lastChange.current > 700) {
+                past.current.push(lastStore.current)
+                if (past.current.length > 60) past.current.shift()
+            }
+            lastChange.current = t
+            future.current = []
+            setHist({ u: past.current.length, r: 0 })
+        }
+        lastStore.current = store
+    }, [store])
+    const undo = () => {
+        if (!past.current.length) return
+        future.current.push(store)
+        restoring.current = true
+        setRoadmaps(past.current.pop())
+        setHist({ u: past.current.length, r: future.current.length })
+        play('undo')
+    }
+    const redo = () => {
+        if (!future.current.length) return
+        past.current.push(store)
+        restoring.current = true
+        setRoadmaps(future.current.pop())
+        setHist({ u: past.current.length, r: future.current.length })
+        play('undo')
+    }
+    useEffect(() => {
+        const onKey = e => {
+            if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+            const el = e.target
+            if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return // let text fields keep their own undo
+            const k = e.key.toLowerCase()
+            if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
+            else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo() }
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+    })
+
+    const exportMarkdown = () => {
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(new Blob([toMarkdown(data, maps)], { type: 'text/markdown' }))
+        a.download = (data.title || 'roadmap').replace(/[^\w-]+/g, '-').toLowerCase() + '.md'
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+        setMenu(null)
+        notify({ title: 'Roadmap exported', body: a.download, icon: '⬇️' })
+    }
+
     /* ----- derived ----- */
     const q = query.trim().toLowerCase()
     const matches = t => !q || JSON.stringify([t.title, t.desc, t.notes, t.steps.map(s => s.t)]).toLowerCase().includes(q)
-    const vis = t => (!pf || t.priority === pf) && matches(t)
+    const vis = t => (!pf || t.priority === pf) && (!sf || st(t) === sf) && matches(t)
     const all = itemsOf(data)
     const doneCount = all.filter(t => st(t) === 'done').length
     const must = all.filter(t => t.priority === 'must')
@@ -1026,6 +1150,7 @@ export default function Roadmap() {
                     <div className="rm-menuback" onClick={() => setMenu(null)} />
                     <div className="rm-menu" role="menu" style={{ top: menu.top, right: menu.right }}>
                         <button role="menuitem" onClick={() => createRoadmap(`${data.title} (copy)`, 'copy')}>⧉ Duplicate this roadmap</button>
+                        <button role="menuitem" onClick={exportMarkdown}>⬇ Export as Markdown</button>
                         <button role="menuitem" disabled={store.order.indexOf(activeId) < 1} onClick={() => moveRoadmap(-1)}>← Move left</button>
                         <button role="menuitem" disabled={store.order.indexOf(activeId) >= store.order.length - 1} onClick={() => moveRoadmap(1)}>→ Move right</button>
                         <button role="menuitem" className="danger" disabled={store.order.length < 2} onClick={() => { if (armed) deleteRoadmap(); else setArmed(true) }}>{armed ? '⚠ Click again to delete' : '🗑 Delete this roadmap'}</button>
@@ -1042,6 +1167,8 @@ export default function Roadmap() {
                 <input className="rm-title" value={data.title} onChange={e => update(d => { d.title = e.target.value })} aria-label="Roadmap title" />
                 <div className="row">
                     <input className="rm-search" type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search topics" aria-label="Search topics" />
+                    <button className="btn" onClick={undo} disabled={!hist.u} title="Undo (Ctrl+Z)" aria-label="Undo">↶</button>
+                    <button className="btn" onClick={redo} disabled={!hist.r} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
                     <button className="btn" onClick={goNext} title="Jump to the next unfinished topic">Continue</button>
                     <button className="btn" onClick={() => setHideSubs(!hideSubs)}>{hideSubs ? 'Show subtopics' : 'Hide subtopics'}</button>
                     <button className="btn primary" onClick={addTopic}>Add topic</button>
@@ -1054,6 +1181,18 @@ export default function Roadmap() {
                     ))}
                     <button className="btn sm ghost" onClick={() => setColorsOpen(true)}>Colours</button>
                 </div>
+                <div className="rm-legend">
+                    <span className="muted small">Status:</span>
+                    {Object.entries(STATUS).map(([k, v]) => (
+                        <button key={k} className={'rm-ch rm-sf' + (sf === k ? ' act' : '')} onClick={() => setSf(sf === k ? null : k)} aria-pressed={sf === k}>{v} · {all.filter(t => st(t) === k).length}</button>
+                    ))}
+                    {(pf || sf) && <button className="btn sm ghost" onClick={() => { setPf(null); setSf(null) }}>Clear filters</button>}
+                </div>
+                {all.length > 0 && (() => {
+                    const f = forecast(all, st)
+                    if (!f.left) return null
+                    return <p className="muted small rm-pace">{f.date ? `Pace: ${f.perWeek} items a week. At this pace you finish ${f.date}.` : 'Finish a few items and a projected finish date appears here, based on your last 28 days.'}</p>
+                })()}
                 <div className="rm-pg">
                     <div className="rm-track"><i style={{ width: pct + '%' }} /></div>
                     <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}{hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}</span>
@@ -1147,6 +1286,9 @@ const CSS = `
 .rm{max-width:1600px;margin:0 auto;padding:20px 20px 120px}
 .rm-head{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;padding-bottom:14px;border-bottom:1px solid var(--ln)}
 .rm-title{border:0!important;background:none!important;font:700 26px var(--head)!important;padding:2px 4px!important;flex:1 1 280px;min-width:0}
+.rm-sf{border-color:var(--ln);color:var(--tx)}.rm-sf.act{border-color:var(--ac);background:color-mix(in srgb,var(--ac) 18%,var(--sf))}
+.rm-pace{margin:6px 0 2px}
+.rm-due{font-size:12px;font-weight:600;color:var(--mu)}.rm-due.late{color:#ff6b8b}
 .rm-search{width:150px!important}.rm-mapsearch{flex:none}
 .rm-legend{flex:1 1 100%;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .rm-tabbar{display:flex;gap:6px;align-items:center;padding:2px 0 12px;margin-bottom:6px}

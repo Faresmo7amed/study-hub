@@ -371,6 +371,12 @@ export function monthTrophies(activity, focus, studyDays, minStudy = 30) {
         .filter(t => t.tier > 0)
 }
 
+// Open a note in the Notes page (used by the linked-notes list of a roadmap topic). The Notes page reads the id when it mounts.
+export function openNote(id) {
+    window.__openNoteId = id
+    window.location.hash = '/notes'
+}
+
 // A game-style reward card. The host that shows it lives in Rewards.jsx (mounted once for the whole app).
 export function reward({ icon = '🎯', title, body = '', kind = 'goal', color = '' }) {
     window.dispatchEvent(new CustomEvent('studyhub:reward', { detail: { id: uid(), icon, title, body, kind, color } }))

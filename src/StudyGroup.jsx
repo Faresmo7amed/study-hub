@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { DAYS, STUDY_DEFAULT, TYPES, addDays, computeStats, dayIndex, getStore, hms, isHttp, iso, notify, onStoreChange, parseISO, setStore, todayISO, uid as newId, useNow, useStats, useStore, weekStart } from './shared'
+import { DAYS, MONTH_TIERS, STUDY_DEFAULT, TYPES, activeDaysIn, addDays, clamp, computeStats, dayIndex, getStore, hms, isHttp, iso, notify, onStoreChange, parseISO, reward, setStore, tierState, todayISO, uid as newId, useNow, useStats, useStore, weekStart } from './shared'
+import { RewardHost } from './Rewards'
 import { DatabaseView, loadBlocks, snapshotBlock } from './Database'
 import { RoadmapView, loadRoadmaps, snapshotRoadmap } from './Roadmap'
 import { HeatGrid, HeatLegend } from './Heatmap'
@@ -21,7 +22,7 @@ export const MAX_SESSION = 360         // a forgotten timer never adds more than
 const ONLINE_MAX = 12 * 3600000 // "studying now" expires after 12 hours
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const EMPTY = []
-const PERIODS = { today: 'Today', week: 'This week', total: 'All time' }
+const PERIODS = { today: 'Today', week: 'This week', month: 'This month', total: 'All time' }
 const TITLES = ['👑 Top of the pack', '🥈 Chasing the crown', '🥉 On the podium']
 const CHEERS = { clap: '👏', fire: '🔥', muscle: '💪' }
 const NUDGE = '👉'
@@ -128,6 +129,7 @@ function publish(user, ids) {
         name: s.name,
         days: Object.fromEntries(Object.entries(s.days).filter(([k]) => k >= cutoff)),
         total: s.total,
+        tier: tierState(activeDaysIn(iso(stamp).slice(0, 7), getStore('activity', {}), getStore('focus', {}), s.days, STREAK_MIN), iso(stamp).slice(0, 7)).tier,
         // A running session is shared as a virtual start time; a paused one as the milliseconds counted so far
         studying: (() => { const p = runParts(getStore('studyrun', {})); return p && p.since ? p.since - p.acc : 0 })(),
         ...(() => { const p = runParts(getStore('studyrun', {})); return p && !p.since ? { paused: Math.max(0, p.acc) } : {} })(),
@@ -153,9 +155,9 @@ export const runElapsed = (r, t) => {
     return p ? p.acc + (p.since ? Math.max(0, t - p.since) : 0) : 0
 }
 
-export function startSession(user) {
+export function startSession(user, subject = '') {
     if (runActive(getStore('studyrun', {}))) return
-    setStore('studyrun', { on: true, acc: 0, since: Date.now() }, {})
+    setStore('studyrun', { on: true, acc: 0, since: Date.now(), subject: String(subject || '').slice(0, 30) }, {})
     play('studystart')
     publish(user)
 }
@@ -164,7 +166,7 @@ export function startSession(user) {
 function pauseAt(t, user) {
     const p = runParts(getStore('studyrun', {}))
     if (!p || !p.since) return false
-    setStore('studyrun', { on: true, acc: p.acc + Math.max(0, t - p.since), since: 0 }, {})
+    setStore('studyrun', { ...getStore('studyrun', {}), on: true, acc: p.acc + Math.max(0, t - p.since), since: 0 }, {})
     publish(user)
     return true
 }
@@ -176,7 +178,7 @@ export function pauseSession(user) {
 export function resumeSession(user) {
     const p = runParts(getStore('studyrun', {}))
     if (!p || p.since) return
-    setStore('studyrun', { on: true, acc: p.acc, since: Date.now() }, {})
+    setStore('studyrun', { ...getStore('studyrun', {}), on: true, acc: p.acc, since: Date.now() }, {})
     play('studystart')
     publish(user)
 }
@@ -231,15 +233,26 @@ export function stopSession(user) {
     const minutes = Math.min(MAX_SESSION, Math.floor(runElapsed(r, Date.now()) / 60000))
     const today = todayISO()
     const before = getStore('studygroup', STUDY_DEFAULT).days[today] || 0
+    const subject = String(r.subject || '').trim()
     setStore('studyrun', {}, {})
     if (minutes > 0) {
-        setStore('studygroup', cur => ({ ...cur, days: { ...cur.days, [today]: (cur.days[today] || 0) + minutes }, total: cur.total + minutes }), STUDY_DEFAULT)
+        setStore('studygroup', cur => ({
+            ...cur,
+            days: { ...cur.days, [today]: (cur.days[today] || 0) + minutes },
+            total: cur.total + minutes,
+            log: [...(cur.log || []), { d: today, m: minutes, s: subject }].slice(-600),
+            subjects: subject ? [...(cur.subjects || []).filter(x => x !== subject), subject].slice(-30) : (cur.subjects || []),
+        }), STUDY_DEFAULT)
     }
+    const goalMin = getStore('studygroup', STUDY_DEFAULT).goalMin || 0
     play('studyend')
     if (before < STREAK_MIN && before + minutes >= STREAK_MIN) {
         const { streak } = streakOf(getStore('studygroup', STUDY_DEFAULT).days, today)
-        notify({ title: streak > 1 ? `${streak}-day study streak` : 'Study streak started', body: `${STREAK_MIN} minutes done today. Come back tomorrow!`, icon: '🔥' })
+        reward({ icon: '🔥', title: streak > 1 ? `${streak}-day study streak` : 'Study streak started', body: `${STREAK_MIN} minutes done today. Come back tomorrow!`, kind: 'goal' })
         play('streak')
+    } else if (goalMin > 0 && before < goalMin && before + minutes >= goalMin) {
+        reward({ icon: '🎯', title: 'Study goal reached', body: `${fmtMin(goalMin)} of study today.`, kind: 'goal' })
+        play('goal')
     } else {
         notify({ title: 'Session saved', body: `${minutes} min added to today.`, icon: '📚' })
     }
@@ -325,7 +338,7 @@ export function StudyPublisher() {
             off()
         }
     }, [uid]) // eslint-disable-line react-hooks/exhaustive-deps
-    return null
+    return <RewardHost studyMin={STREAK_MIN} />
 }
 
 /* ---------- small forms ---------- */
@@ -443,7 +456,7 @@ function ProfileView({ r, isMe, cheerCount, onCheer, onClose }) {
                 <div className="sg-pv">
                     <Avatar name={r.name} photo={p.photo} size={72} />
                     <div>
-                        <h2 style={{ margin: 0 }}>{r.name}{isMe ? ' (you)' : ''}</h2>
+                        <h2 style={{ margin: 0 }}>{r.name}{isMe ? ' (you)' : ''} <TitleChip tier={r.tier} /></h2>
                         {p.focus && <p className="muted" style={{ margin: 0 }}>📖 {p.focus}</p>}
                         {r.on && <p style={{ margin: 0 }}>🟢 studying now</p>}
                         {r.paused && <p style={{ margin: 0 }}>⏸ paused</p>}
@@ -672,6 +685,99 @@ function WeekSummary({ rows, friday, ws }) {
     )
 }
 
+
+const TitleChip = ({ tier }) => {
+    const t = tier > 0 ? MONTH_TIERS[Math.min(tier, MONTH_TIERS.length) - 1] : null
+    return t ? <span className="sg-ttl" style={{ '--tc': t.color }} title={`${t.name}: this month's title`}>{t.icon} {t.name}</span> : null
+}
+
+const fmtDay = k => parseISO(k).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+
+// Parent: StudyGroup. Child: nothing. Your own week as a chart with your daily goal, and where your minutes went.
+function MyStudy({ s, update, liveToday, now }) {
+    const [scope, setScope] = useState('week')
+    const ws = weekStart(now)
+    const today = iso(now)
+    const days = s.days || {}
+    const goal = s.goalMin || STREAK_MIN
+    const per = DAYS.map((name, i) => {
+        const k = iso(addDays(ws, i))
+        return { name, k, min: (days[k] || 0) + (k === today ? liveToday : 0) }
+    })
+    const max = Math.max(goal, 30, ...per.map(d => d.min)) * 1.15
+    const total = per.reduce((n, d) => n + d.min, 0)
+    const activeN = per.filter(d => d.min > 0).length
+    const from = scope === 'week' ? iso(ws) : '0000-00-00'
+    const bySubject = {}
+    ;(s.log || []).forEach(e => { if (e.d >= from) bySubject[e.s || 'No subject'] = (bySubject[e.s || 'No subject'] || 0) + e.m })
+    const subjects = Object.entries(bySubject).sort((a, b) => b[1] - a[1])
+    const top = Math.max(1, ...subjects.map(x => x[1]))
+    const setGoal = delta => update(d => { d.goalMin = clamp((d.goalMin || STREAK_MIN) + delta, 15, 600) })
+
+    return (
+        <section className="card sg-my" aria-label="My study">
+            <div className="row">
+                <h3 className="grow">My week</h3>
+                <span className="muted small">Daily goal {fmtMin(goal)}</span>
+                <button className="icon-btn" onClick={() => setGoal(-15)} aria-label="Lower daily study goal">−</button>
+                <button className="icon-btn" onClick={() => setGoal(15)} aria-label="Raise daily study goal">+</button>
+            </div>
+            <div className="sg-plot" role="img" aria-label={`Minutes studied each day this week, ${fmtMin(total)} in total`}>
+                <span className="sg-goalline" style={{ bottom: (100 * goal) / max + '%' }}><em>goal</em></span>
+                {per.map(d => (
+                    <div key={d.k} className="sg-col" title={`${d.name}: ${fmtMin(d.min)}`}>
+                        <i className={d.min >= goal ? 'hit' : d.k === today ? 'now' : ''} style={{ height: (100 * d.min) / max + '%' }} />
+                    </div>
+                ))}
+            </div>
+            <div className="sg-xl">{per.map(d => <small key={d.k} className={d.k === today ? 'now' : ''}>{d.name.slice(0, 3)}</small>)}</div>
+            <p className="muted small" style={{ margin: 0 }}>{fmtMin(total)} this week · {activeN} active day{activeN === 1 ? '' : 's'}{activeN ? ` · about ${fmtMin(Math.round(total / activeN))} per active day` : ''}</p>
+            <div className="row">
+                <b className="small grow">By subject</b>
+                <div className="seg" role="group" aria-label="Period">
+                    <button className={'btn sm' + (scope === 'week' ? ' on' : '')} onClick={() => setScope('week')}>This week</button>
+                    <button className={'btn sm' + (scope === 'all' ? ' on' : '')} onClick={() => setScope('all')}>All time</button>
+                </div>
+            </div>
+            {subjects.length === 0 ? <p className="muted small" style={{ margin: 0 }}>Type a subject before you start the timer and your minutes are grouped here.</p> : (
+                <ul className="sg-subs">
+                    {subjects.map(([name, min]) => (
+                        <li key={name}><span>{name}</span><b>{fmtMin(min)}</b><div className="bar"><i style={{ width: (100 * min) / top + '%' }} /></div></li>
+                    ))}
+                </ul>
+            )}
+        </section>
+    )
+}
+
+// Parent: StudyGroup. Child: nothing. Earlier weeks: the group total, the champion and your own minutes.
+function History({ rows, now, uid }) {
+    const ws = weekStart(now)
+    const weeks = Array.from({ length: 12 }, (_, i) => {
+        const from = iso(addDays(ws, -7 * (i + 1)))
+        const to = iso(addDays(ws, -7 * (i + 1) + 6))
+        const per = rows.map(r => ({ uid: r.uid, name: r.name, min: sumDays(r.days, from, to) }))
+        const total = per.reduce((n, r) => n + r.min, 0)
+        return { from, to, total, champ: [...per].sort((a, b) => b.min - a.min)[0], me: (per.find(r => r.uid === uid) || { min: 0 }).min }
+    }).filter(w => w.total > 0)
+    if (!weeks.length) return null
+    return (
+        <details className="card sg-hist">
+            <summary><b>Past weeks</b> <span className="muted small">champions and totals</span></summary>
+            <ul className="sg-hl">
+                {weeks.map(w => (
+                    <li key={w.from}>
+                        <b>{fmtDay(w.from)} – {fmtDay(w.to)}</b>
+                        <span>🏆 {w.champ.name} · {fmtMin(w.champ.min)}</span>
+                        <span>👥 {fmtMin(w.total)}</span>
+                        <span>You {fmtMin(w.me)}</span>
+                    </li>
+                ))}
+            </ul>
+        </details>
+    )
+}
+
 /* ============================================================
    Page
    ============================================================ */
@@ -683,6 +789,9 @@ export default function StudyGroup() {
     const uid = user ? user.uid : ''
     const [s, , update] = useStore('studygroup', STUDY_DEFAULT)
     const [run] = useStore('studyrun', {})
+    const [activity] = useStore('activity', {})
+    const [focus] = useStore('focus', {})
+    const [subject, setSubject] = useState(() => (getStore('studygroup', STUDY_DEFAULT).subjects || []).slice(-1)[0] || '')
     const now = useNow(1000)
     const [period, setPeriod] = useState('today')
     const [adding, setAdding] = useState(false)
@@ -759,8 +868,12 @@ export default function StudyGroup() {
         }
     }, [activeId, uid])
 
+    const monthNow = iso(now).slice(0, 7)
+    const myTier = useMemo(() => tierState(activeDaysIn(monthNow, activity, focus, s.days || {}, STREAK_MIN), monthNow).tier, [monthNow, activity, focus, s.days])
+
     // One row per member, with the running session counted in
     const rows = useMemo(() => {
+    const monthFrom = monthNow + '-01'
     const t = now.getTime()
     const today = iso(now)
     const ws = iso(weekStart(now))
@@ -775,13 +888,13 @@ export default function StudyGroup() {
             const tp = m.todos || {}
             const mine = m.uid === uid
             return {
-                uid: m.uid, name: m.name || '?', on, paused, live, days, today: days[today], week: sumDays(days, ws, today), total: (m.total || 0) + live,
+                uid: m.uid, name: m.name || '?', on, paused, live, days, today: days[today], week: sumDays(days, ws, today), month: sumDays(days, monthFrom, today), tier: mine ? myTier : m.tier || 0, total: (m.total || 0) + live,
                 streak, best, todos: plannedToday, profile: m.profile || {},
                 plan: mine ? planOf(todos[ws]) : tp.week === ws ? tp.plan || {} : null, // your own plan is always live
                 appStreak: mine ? stats.streak : tp.streak || 0,
             }
         })
-    }, [members, now, todos, stats, uid])
+    }, [members, now, todos, stats, uid, myTier, monthNow])
 
     const byName = (a, b) => a.name.localeCompare(b.name)
     const order = useMemo(() => [...rows].sort((a, b) => b[period] - a[period] || byName(a, b)), [rows, period])
@@ -792,6 +905,17 @@ export default function StudyGroup() {
     const sessions = useFeed(fb.watchGroupEvents, activeId, uid, EMPTY)
     const goal = (group && group.goal) || 0
     const isOwner = Boolean(group) && group.owner === uid
+    const block = group && group.block && group.block.start ? group.block : null
+    const blockEnd = block ? block.start + block.min * 60000 : 0
+    const joinBlock = () => { if (!runActive(getStore('studyrun', {}))) startSession(user, 'Group block') }
+    const seenBlock = useRef(0)
+    useEffect(() => {
+        if (!block || blockEnd <= Date.now() || seenBlock.current === block.start) return
+        seenBlock.current = block.start
+        if (block.by !== uid) notify({ title: 'Group focus block', body: `${block.min} minutes, studying together.`, icon: '⏱', actions: [{ label: 'Join', onClick: joinBlock }] })
+        const t = setTimeout(() => notify({ title: 'Focus block finished', body: 'Great work. Take a short break.', icon: '🎉' }), blockEnd - Date.now())
+        return () => clearTimeout(t)
+    }, [block && block.start]) // eslint-disable-line react-hooks/exhaustive-deps
     const weekTotal = rows.reduce((n, r) => n + r.week, 0)
     const groupDays = useMemo(() => {
         const out = {}
@@ -934,6 +1058,11 @@ export default function StudyGroup() {
         publish(user)
     }
     const sendCheer = (toUid, kind) => cheerFriend(activeId, uid, toUid, kind, (cheers.find(c => c.id === `${uid}_${toUid}`) || {}).n || 0)
+    const startBlock = min => {
+        fb.setGroupBlock(activeId, { start: Date.now(), min, by: uid }).then(() => play('save')).catch(fail)
+        joinBlock()
+    }
+    const cancelBlock = () => fb.setGroupBlock(activeId, null).catch(fail)
     const changeGoal = () => {
         const raw = window.prompt('Weekly goal for the whole group, in hours (0 removes it)', goal ? String(Math.round(goal / 60)) : '20')
         if (raw === null) return
@@ -999,16 +1128,22 @@ const removeShare = id => {
             <style>{CSS}</style>
             <header className="sg-head">
                 <h1>Study Group</h1>
-                <span className="muted">Studying as <b>{s.name}</b></span>
+                <span className="muted">Studying as <b>{s.name}</b></span> <TitleChip tier={myTier} />
                                 <button className="btn sm ghost" onClick={() => setEditing(true)}>Edit profile</button>
             </header>
 
             <section className="card sg-timer" aria-label="Study timer">
                 <div>
-                    <p className="muted small">{running ? '📖 You are studying' : sessionOn ? '⏸ Paused' : 'Ready when you are'}</p>
+                    <p className="muted small">{running ? '📖 You are studying' : sessionOn ? '⏸ Paused' : 'Ready when you are'}{run.subject ? ` · ${run.subject}` : ''}</p>
                     <div className={'sg-clock' + (running ? ' on' : '')}>{hms(elapsed)}</div>
+                    {!sessionOn && (
+                        <>
+                            <input className="sg-subj" list="sg-subjects" value={subject} onChange={e => setSubject(e.target.value)} placeholder="Subject (optional)" maxLength={30} aria-label="Subject" />
+                            <datalist id="sg-subjects">{(s.subjects || []).map(x => <option key={x} value={x} />)}</datalist>
+                        </>
+                    )}
                     <div className="row" style={{ gap: 8 }}>
-                        {!sessionOn && <button className="btn primary" onClick={() => startSession(user)}>Start studying</button>}
+                        {!sessionOn && <button className="btn primary" onClick={() => startSession(user, subject.trim())}>Start studying</button>}
                         {running && <button className="btn" onClick={() => pauseSession(user)}>Pause</button>}
                         {sessionOn && !running && <button className="btn primary" onClick={() => resumeSession(user)}>Resume</button>}
                         {sessionOn && <button className="btn danger" onClick={() => stopSession(user)}>Stop and save</button>}
@@ -1023,6 +1158,22 @@ const removeShare = id => {
                     </div>
                 </div>
             </section>
+
+            {active && (block && blockEnd > now.getTime() ? (
+                <div className="sg-block on" role="status">
+                    <span>⏱ Group focus block · <b>{hms(blockEnd - now.getTime())}</b> left</span>
+                    {!sessionOn && <button className="btn sm primary" onClick={joinBlock}>Join</button>}
+                    {isOwner && <button className="btn sm ghost" onClick={cancelBlock}>Cancel</button>}
+                </div>
+            ) : isOwner ? (
+                <div className="sg-block">
+                    <span>Study in sync with your group:</span>
+                    <button className="btn sm" onClick={() => startBlock(25)}>25 min block</button>
+                    <button className="btn sm" onClick={() => startBlock(50)}>50 min block</button>
+                </div>
+            ) : null)}
+
+            <MyStudy s={s} update={update} liveToday={liveMin} now={now} />
 
             <div className="sg-tabs" role="tablist">
                 {s.groups.map(g => (
@@ -1074,7 +1225,7 @@ const removeShare = id => {
                                 <button className="sg-who" onClick={() => setProfileId(r.uid)} aria-label={`Open ${r.name}'s profile`}>
                                     <Avatar name={r.name} photo={r.profile.photo} size={48} />
                                     <div className="grow">
-                                        <b>{r.name}{r.uid === uid ? ' (you)' : ''}</b>
+                                        <b>{r.name}{r.uid === uid ? ' (you)' : ''} <TitleChip tier={r.tier} /></b>
                                         <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : r.paused ? ' · ⏸ paused' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} today` : ''}</small>
                                     </div>
                                 </button>
@@ -1108,6 +1259,7 @@ const removeShare = id => {
                         <span className="muted small">Saturday to Friday. Friends see your todo text.</span>
                     </div>
                     <WeekSummary rows={rows} friday={dayIndex(now) === 6} ws={weekStartDate} />
+                    <History rows={rows} now={now} uid={uid} />
                     <div className="sg-plans">
                         {order.map(r => <WeekPlan key={r.uid} r={r} isMe={r.uid === uid} today={dayIndex(now)} ws={weekStartDate} onNudge={uid2 => sendCheer(uid2, 'nudge')} />)}
                     </div>
@@ -1139,6 +1291,19 @@ const removeShare = id => {
 }
 
 const CSS = `
+.sg-ttl{display:inline-block;font:600 11px var(--head);padding:2px 9px;border-radius:999px;border:1px solid var(--tc);background:color-mix(in srgb,var(--tc) 14%,var(--sf2));vertical-align:middle;white-space:nowrap}
+.sg-subj{width:100%;margin-bottom:8px}
+.sg-block{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-radius:10px;border:1px dashed var(--ln);background:var(--sf2)}
+.sg-block.on{border:1px solid var(--ac);background:color-mix(in srgb,var(--ac) 10%,var(--sf2))}.sg-block span{flex:1;min-width:140px}
+.sg-my{display:grid;gap:10px}
+.sg-plot{position:relative;display:flex;gap:8px;align-items:stretch;height:130px;border-bottom:1px solid var(--ln)}
+.sg-col{flex:1;display:flex;align-items:flex-end}.sg-col i{display:block;width:100%;border-radius:6px 6px 0 0;background:color-mix(in srgb,var(--ac) 55%,var(--ln));min-height:2px}
+.sg-col i.now{background:var(--ac)}.sg-col i.hit{background:var(--ok)}
+.sg-goalline{position:absolute;left:0;right:0;border-top:2px dashed var(--wip,#ffb454);pointer-events:none}.sg-goalline em{position:absolute;right:0;top:-17px;font:600 10px var(--head);color:var(--mu);font-style:normal}
+.sg-xl{display:flex;gap:8px;margin-top:-4px}.sg-xl small{flex:1;text-align:center;font-size:11px;color:var(--mu)}.sg-xl small.now{color:var(--ac);font-weight:700}
+.sg-subs{list-style:none;margin:0;padding:0;display:grid;gap:8px}.sg-subs li{display:grid;grid-template-columns:1fr auto;gap:2px 8px}.sg-subs .bar{grid-column:1/-1;margin:0}
+.sg-hist summary{cursor:pointer}.sg-hl{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
+.sg-hl li{display:flex;gap:6px 14px;flex-wrap:wrap;padding:6px 10px;border-radius:8px;background:var(--sf2);font-size:13px}.sg-hl li b{min-width:150px}
 .sg{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;gap:18px}
 .sg-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.sg-head h1{font-size:32px}
 .sg-box{padding:20px;display:grid;gap:10px}

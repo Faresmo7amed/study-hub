@@ -41,13 +41,18 @@ service cloud.firestore {
         && request.resource.data.name.size() > 0
         && request.resource.data.name.size() <= 40
         && request.resource.data.createdAt is number;
-      // Only the owner can change the weekly goal, and nothing else
+      // Only the owner can change the weekly goal and the group focus block, and nothing else
       allow update: if request.auth != null
         && resource.data.owner == request.auth.uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['goal'])
-        && request.resource.data.goal is number
-        && request.resource.data.goal >= 0
-        && request.resource.data.goal <= 60000;
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['goal', 'block'])
+        && request.resource.data.get('goal', 0) is number
+        && request.resource.data.get('goal', 0) >= 0
+        && request.resource.data.get('goal', 0) <= 60000
+        && request.resource.data.get('block', {}) is map
+        && request.resource.data.get('block', {}).keys().hasOnly(['start', 'min', 'by'])
+        && request.resource.data.get('block', {}).get('min', 25) is number
+        && request.resource.data.get('block', {}).get('min', 25) >= 5
+        && request.resource.data.get('block', {}).get('min', 25) <= 180;
 
       match /members/{uid} {
         allow read: if request.auth != null
@@ -55,7 +60,7 @@ service cloud.firestore {
         allow create, update: if request.auth != null
           && request.auth.uid == uid
           && exists(/databases/$(database)/documents/groups/$(code))
-          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'paused', 'todos', 'profile', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'paused', 'tier', 'todos', 'profile', 'updatedAt'])
           && request.resource.data.name is string
           && request.resource.data.name.size() > 0
           && request.resource.data.name.size() <= 24
@@ -63,6 +68,7 @@ service cloud.firestore {
           && request.resource.data.total is number
           && request.resource.data.studying is number
           && request.resource.data.get('paused', 0) is number
+          && request.resource.data.get('tier', 0) is number
           && request.resource.data.get('todos', {}) is map
           && profileOk(request.resource.data.get('profile', {}))
           && request.resource.data.updatedAt is number;

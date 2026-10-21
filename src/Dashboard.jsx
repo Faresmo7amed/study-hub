@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Database from './Database'
 import { play } from './sound'
 import {
-    BADGES, DAYS, TYPES, TYPE_KEYS, addDays, clamp, dayIndex, emptyWeek, hms, isHttp, iso,
+    BADGES, DAYS, MONTH_TIERS, STUDY_DEFAULT, TYPES, TYPE_KEYS, activeDaysIn, addDays, clamp, dayIndex, emptyWeek, hms, isHttp, iso, monthKey, monthLength, monthTrophies, tierState,
     normalizeUrl, notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
     useNow, useStats, useStore, weekStart,
 } from './shared'
-import { EVENT_COLORS, removeEvent, toggleTodo } from './todoActions'
+import { EVENT_COLORS, carryYesterday, removeEvent, toggleTodo } from './todoActions'
+import { STREAK_MIN } from './StudyGroup'
+import { runRecurringNow } from './Rewards'
 import Contributions from './Heatmap'
 
 const fmtShort = d => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -151,6 +153,167 @@ function StreakCard() {
     )
 }
 
+
+/* ============================================================
+   Monthly title: active days decide the title, six tiers per month
+   ============================================================ */
+function TitleCard() {
+    const [activity] = useStore('activity', {})
+    const [focus] = useStore('focus', {})
+    const [study] = useStore('studygroup', STUDY_DEFAULT)
+    const now = useNow(60000)
+    const ym = monthKey(now)
+    const days = study.days || {}
+    const st = useMemo(() => tierState(activeDaysIn(ym, activity, focus, days, STREAK_MIN), ym), [ym, activity, focus, days])
+    const trophies = useMemo(() => monthTrophies(activity, focus, days, STREAK_MIN).filter(t => t.ym !== ym), [ym, activity, focus, days])
+    const len = monthLength(ym)
+    const isActive = k => (activity[k] || 0) > 0 || (focus[k] || 0) > 0 || (days[k] || 0) >= STREAK_MIN
+    const label = now.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    const monthName = ymKey => new Date(Number(ymKey.slice(0, 4)), Number(ymKey.slice(5, 7)) - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+
+    return (
+        <section className="card ttl" aria-label="Monthly title" style={st.cur ? { '--tc': st.cur.color } : undefined}>
+            <div className="ttl-head">
+                <span className="ttl-badge" aria-hidden="true">{st.cur ? st.cur.icon : '🌑'}</span>
+                <div className="grow">
+                    <p className="muted small">{label} · {st.count} active day{st.count === 1 ? '' : 's'}</p>
+                    <h2>{st.cur ? st.cur.name : 'No title yet'}</h2>
+                    <p className="muted small">
+                        {st.next ? `${st.left} more active day${st.left === 1 ? '' : 's'} to become ${st.next.name}. A day counts when you finish a todo, a focus session, or study ${STREAK_MIN} minutes.` : 'Top title reached. Every day counted!'}
+                    </p>
+                </div>
+            </div>
+            <div className="bar"><i className={st.tier === MONTH_TIERS.length ? 'full' : ''} style={{ width: st.pct + '%' }} /></div>
+            <ol className="ttl-tiers" aria-label="Titles of this month">
+                {MONTH_TIERS.map((t, i) => (
+                    <li key={t.name} className={'ttl-tier' + (st.tier > i ? ' got' : '')} style={{ '--tc': t.color }} title={`${t.name}: ${st.needs[i]} active days`}>
+                        <span>{st.tier > i ? t.icon : '🔒'}</span>
+                        <b>{t.name}</b>
+                        <small>{st.needs[i]} days</small>
+                    </li>
+                ))}
+            </ol>
+            <div className="ttl-days" aria-label="Active days this month">
+                {Array.from({ length: len }, (_, i) => {
+                    const k = `${ym}-${pad(i + 1)}`
+                    return <i key={k} className={(isActive(k) ? 'on' : '') + (k === iso(now) ? ' today' : '')} title={`${i + 1}${isActive(k) ? ': active' : ''}`} />
+                })}
+            </div>
+            {trophies.length > 0 && (
+                <div className="ttl-shelf" aria-label="Trophies from earlier months">
+                    <span className="muted small">Trophies</span>
+                    {trophies.slice(0, 12).map(t => <span key={t.ym} className="ttl-trophy" style={{ '--tc': t.cur.color }} title={`${t.count} active days`}>{t.cur.icon} {monthName(t.ym)} · {t.cur.name}</span>)}
+                </div>
+            )}
+        </section>
+    )
+}
+
+/* ============================================================
+   Weekly review: how the week went, last week or this week so far
+   ============================================================ */
+function WeeklyReview() {
+    const [todos] = useStore('todos', {})
+    const [activity] = useStore('activity', {})
+    const [focus] = useStore('focus', {})
+    const [study] = useStore('studygroup', STUDY_DEFAULT)
+    const [which, setWhich] = useState(-1)
+    const now = useNow(60000)
+    const ws = addDays(weekStart(now), which * 7)
+    const week = todos[iso(ws)] || emptyWeek()
+    const all = week.flat()
+    const planned = all.length
+    const done = all.filter(t => t.done).length
+    const per = DAYS.map((name, i) => {
+        const k = iso(addDays(ws, i))
+        return { name, k, done: activity[k] || 0, sessions: focus[k] || 0, min: (study.days || {})[k] || 0 }
+    })
+    const sessions = per.reduce((n, d) => n + d.sessions, 0)
+    const minutes = per.reduce((n, d) => n + d.min, 0)
+    const activeDays = per.filter(d => d.done > 0 || d.sessions > 0 || d.min >= STREAK_MIN).length
+    const best = [...per].sort((a, b) => b.done + b.sessions - (a.done + a.sessions))[0]
+    const top = Math.max(1, ...per.map(d => d.done + d.sessions))
+    const pct = planned ? Math.round((100 * done) / planned) : 0
+    const verdict = !planned && !sessions && !minutes ? 'Nothing recorded for this week.'
+        : pct >= 80 ? 'Great week. Keep this rhythm.' : pct >= 50 ? 'Solid week. A few todos slipped, plan fewer next time.' : 'A slow week. Pick two small todos tomorrow and restart.'
+    const fmtM = m => (m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`)
+
+    return (
+        <section className="card side-card wr" aria-label="Weekly review">
+            <div className="row">
+                <h3 className="grow">Weekly review</h3>
+                <div className="seg" role="group" aria-label="Which week">
+                    <button className={'btn sm' + (which === -1 ? ' on' : '')} onClick={() => setWhich(-1)}>Last week</button>
+                    <button className={'btn sm' + (which === 0 ? ' on' : '')} onClick={() => setWhich(0)}>So far</button>
+                </div>
+            </div>
+            <div className="wr-grid">
+                <div><b>{done}/{planned}</b><span>todos ({pct}%)</span></div>
+                <div><b>{sessions}</b><span>focus sessions</span></div>
+                <div><b>{fmtM(minutes)}</b><span>studied</span></div>
+                <div><b>{activeDays}/7</b><span>active days</span></div>
+            </div>
+            <div className="wr-bars" aria-hidden="true">
+                {per.map(d => <div key={d.k} title={`${d.name}: ${d.done} todos, ${d.sessions} sessions`}><i style={{ height: Math.max(4, (100 * (d.done + d.sessions)) / top) + '%' }} /><small>{d.name.slice(0, 1)}</small></div>)}
+            </div>
+            <p className="muted small" style={{ margin: 0 }}>{best && best.done + best.sessions > 0 ? `Best day: ${best.name}. ` : ''}{verdict}</p>
+        </section>
+    )
+}
+
+/* ============================================================
+   Recurring todos: created automatically on the days you choose
+   ============================================================ */
+function RecurringCard() {
+    const [list, , update] = useStore('recurring', [])
+    const [text, setText] = useState('')
+    const [type, setType] = useState('task')
+    const [sel, setSel] = useState([0, 1, 2, 3, 4, 5, 6])
+    const items = Array.isArray(list) ? list : []
+
+    const add = e => {
+        e.preventDefault()
+        const v = text.trim()
+        if (!v || !sel.length) return
+        update(d => { (Array.isArray(d) ? d : []).push({ id: uid(), text: v, type, days: [...sel].sort(), last: '' }) })
+        setText('')
+        play('add')
+        setTimeout(runRecurringNow, 50)
+    }
+    const label = days => (days.length === 7 ? 'Every day' : days.map(i => DAYS[i].slice(0, 3)).join(', '))
+
+    return (
+        <section className="card side-card" aria-label="Recurring todos">
+            <h3>Recurring todos</h3>
+            <form className="wk-add" onSubmit={add}>
+                <input value={text} onChange={e => setText(e.target.value)} placeholder="e.g. Review flashcards" aria-label="Recurring todo" maxLength={120} />
+                <div className="seg" role="group" aria-label="Repeat on">
+                    {DAYS.map((name, i) => (
+                        <button type="button" key={name} className={'btn sm' + (sel.includes(i) ? ' on' : '')} aria-pressed={sel.includes(i)} title={name}
+                            onClick={() => setSel(sel.includes(i) ? sel.filter(x => x !== i) : [...sel, i])}>{name.slice(0, 1)}</button>
+                    ))}
+                </div>
+                <div className="row">
+                    <select value={type} onChange={e => setType(e.target.value)} aria-label="Type" style={{ flex: 1 }}>
+                        {TYPE_KEYS.map(k => <option key={k} value={k}>{TYPES[k].icon} {TYPES[k].label}</option>)}
+                    </select>
+                    <button className="btn sm primary" type="submit" disabled={!text.trim() || !sel.length}>Repeat</button>
+                </div>
+            </form>
+            {items.length === 0 ? <p className="muted small" style={{ margin: 0 }}>Todos you repeat appear on their days by themselves.</p> : (
+                <ul className="rc-list">
+                    {items.map(r => (
+                        <li key={r.id}>
+                            <span className="grow"><b>🔁 {r.text}</b><small className="muted">{label(r.days || [])}</small></span>
+                            <button className="icon-btn" onClick={() => { update(d => d.filter(x => x.id !== r.id)); play('delete') }} aria-label={`Stop repeating ${r.text}`} title="Stop repeating (todos already created stay)">×</button>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </section>
+    )
+}
+
 /* ============================================================
    Weekly board (Saturday to Friday)
    ============================================================ */
@@ -218,6 +381,8 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn }) {
                         <button className="icon-btn td-pen" onClick={startEdit} aria-label="Edit todo" title="Edit">✎</button>
                     </span>
                 )}
+                {todo.pomos > 0 && <span className="td-pomo" title="Focus sessions spent on this todo">🍅 {todo.pomos}</span>}
+                {todo.rid && <span className="td-pomo" title="Repeats automatically">🔁</span>}
                 <select className="td-type" value={todo.type} onChange={e => onEdit(todo.id, { type: e.target.value })} style={{ '--c': meta.color }} aria-label="Type">
                     {TYPE_KEYS.map(k => <option key={k} value={k}>{TYPES[k].icon} {TYPES[k].label}</option>)}
                 </select>
@@ -227,13 +392,14 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn }) {
     )
 }
 
-function DayColumn({ day, date, list, isToday, isPast, filter, onAdd, onToggle, onEdit, onDelete, onMove }) {
+function DayColumn({ day, date, list, isToday, isPast, filter, query = '', onAdd, onToggle, onEdit, onDelete, onMove }) {
     const [adding, setAdding] = useState(false)
     const [text, setText] = useState('')
     const [type, setType] = useState('task')
     const [link, setLink] = useState('')
     const [over, setOver] = useState(false)
-    const shown = filter === 'all' ? list : list.filter(t => t.type === filter)
+    const q = query.trim().toLowerCase()
+    const shown = list.filter(t => (filter === 'all' || t.type === filter) && (!q || t.text.toLowerCase().includes(q)))
     const done = list.filter(t => t.done).length
 
     const submit = e => {
@@ -295,6 +461,7 @@ function WeekBoard() {
     const [todos, , update] = useStore('todos', {})
     const [offset, setOffset] = useState(0)
     const [filter, setFilter] = useState('all')
+    const [query, setQuery] = useState('')
     const now = useNow(30000)
     const ws = addDays(weekStart(now), offset * 7)
     const key = iso(ws)
@@ -354,6 +521,30 @@ function WeekBoard() {
         notify({ title: count ? `Carried over ${count} unfinished todo${count > 1 ? 's' : ''}` : 'Nothing to carry over', body: count ? 'They were copied to the same weekday this week.' : 'Last week has no unfinished todos.', icon: '↪️' })
     }
 
+    const moveYesterday = () => {
+        const n = carryYesterday()
+        if (n) play('save')
+        notify({ title: n ? `Moved ${n} unfinished todo${n > 1 ? 's' : ''} to today` : 'Nothing to move', body: n ? 'They were taken from yesterday.' : 'Yesterday has no unfinished todos.', icon: '↪️' })
+    }
+
+    // Shortcuts: n = new todo today, / = search
+    useEffect(() => {
+        const onKey = e => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return
+            const el = e.target
+            if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName))) return
+            if (e.key === 'n') {
+                const btn = document.querySelector('.wk-col.today .wk-new')
+                if (btn) { e.preventDefault(); btn.click() }
+            } else if (e.key === '/') {
+                const box = document.getElementById('wk-search')
+                if (box) { e.preventDefault(); box.focus() }
+            }
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+    }, [])
+
     return (
         <section className="card wk" id="section-week" aria-label="Weekly todos">
             <div className="wk-head">
@@ -370,6 +561,7 @@ function WeekBoard() {
                     <button className="btn sm" onClick={() => setOffset(0)} disabled={offset === 0}>This week</button>
                     <button className="btn sm" onClick={() => setOffset(offset + 1)} aria-label="Next week">›</button>
                     <button className="btn sm" onClick={carryOver} title="Copy unfinished todos from the previous week">Carry over unfinished</button>
+                    <button className="btn sm" onClick={moveYesterday} title="Move yesterday's unfinished todos to today">Yesterday → today</button>
                 </div>
             </div>
             <div className="seg" role="group" aria-label="Filter by type">
@@ -377,12 +569,15 @@ function WeekBoard() {
                 {TYPE_KEYS.map(k => (
                     <button key={k} className={'btn sm' + (filter === k ? ' on' : '')} onClick={() => setFilter(filter === k ? 'all' : k)}>{TYPES[k].icon} {TYPES[k].label}</button>
                 ))}
+                <input id="wk-search" className="wk-search" type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search todos ( / )" aria-label="Search todos"
+                    onKeyDown={e => { if (e.key === 'Escape') { setQuery(''); e.currentTarget.blur() } }} />
             </div>
+            <p className="muted small wk-keys">Shortcuts: <kbd>n</kbd> new todo today · <kbd>/</kbd> search · <kbd>Space</kbd> start or pause the focus timer</p>
             <div className="wk-grid">
                 {DAYS.map((_, i) => {
                     const date = addDays(ws, i)
                     return (
-                        <DayColumn key={i} day={i} date={date} list={week[i]} filter={filter}
+                        <DayColumn key={i} day={i} date={date} list={week[i]} filter={filter} query={query}
                             isToday={iso(date) === today} isPast={iso(date) < today}
                             onAdd={add} onToggle={(day, id, el) => toggleTodo(key, day, id, el)} onEdit={edit} onDelete={remove} onMove={move} />
                     )
@@ -581,6 +776,8 @@ function Pomodoro() {
     const [left, setLeft] = useState(25 * 60)
     const [running, setRunning] = useState(false)
     const [focus, , updateFocus] = useStore('focus', {})
+    const [todos, , updateTodos] = useStore('todos', {})
+    const [taskId, setTaskId] = useState('')
     const endRef = useRef(0)
     const tickRef = useRef(0) // last moment the page was alive while the timer ran
     const total = (mode === 'focus' ? mins : 5) * 60
@@ -591,6 +788,13 @@ function Pomodoro() {
             setRunning(false)
             if (mode === 'focus') {
                 updateFocus(d => { d[todayISO()] = (d[todayISO()] || 0) + 1 })
+                if (taskId) {
+                    const nowD = new Date()
+                    updateTodos(d => {
+                        const t = (((d[iso(weekStart(nowD))] || [])[dayIndex(nowD)]) || []).find(x => x.id === taskId)
+                        if (t) t.pomos = (t.pomos || 0) + 1
+                    })
+                }
                 notify({ title: 'Focus session complete', body: `${mins} minutes done. Take a 5 minute break.`, icon: '🍅' })
                 systemNotify('Focus session complete', 'Take a 5 minute break.')
                 play('focus')
@@ -619,7 +823,7 @@ function Pomodoro() {
             if (remain === 0) finish()
         }, 250)
         return () => clearInterval(id)
-    }, [running, mode, mins]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [running, mode, mins, taskId]) // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         const base = document.title
@@ -645,6 +849,21 @@ function Pomodoro() {
         setLeft(m * 60)
     }
     const sessions = focus[todayISO()] || 0
+    const nowD = new Date()
+    const openToday = ((todos[iso(weekStart(nowD))] || [])[dayIndex(nowD)] || []).filter(t => !t.done)
+    const toggleRef = useRef(toggle)
+    toggleRef.current = toggle
+    useEffect(() => {
+        const onKey = e => {
+            if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey) return
+            const el = e.target
+            if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(el.tagName))) return
+            e.preventDefault()
+            toggleRef.current()
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+    }, [])
 
     return (
         <section className="card side-card" aria-label="Focus timer">
@@ -652,6 +871,10 @@ function Pomodoro() {
             <div className="seg" role="group" aria-label="Session length">
                 {[15, 25, 50].map(m => <button key={m} className={'btn sm' + (mins === m && mode === 'focus' ? ' on' : '')} onClick={() => pickMins(m)}>{m} min</button>)}
             </div>
+            <select className="pomo-task" value={taskId} onChange={e => setTaskId(e.target.value)} aria-label="Todo to focus on">
+                <option value="">Focus on: no todo</option>
+                {openToday.map(t => <option key={t.id} value={t.id}>{t.text.slice(0, 40)}{t.pomos ? ` · 🍅${t.pomos}` : ''}</option>)}
+            </select>
             <div className={'pomo-time' + (mode === 'break' ? ' brk' : '')} aria-live="off">{pad(Math.floor(left / 60))}:{pad(left % 60)}</div>
             <p className="muted small" style={{ textAlign: 'center' }}>{mode === 'focus' ? 'Focus' : 'Break'}</p>
             <div className="bar"><i style={{ width: (100 * (total - left)) / total + '%' }} /></div>
@@ -675,6 +898,7 @@ export default function Dashboard() {
                 <DayCard />
                 <StreakCard />
             </div>
+            <TitleCard />
             <div id="section-activity"><Contributions /></div>
             <nav className="dash-jump" aria-label="Jump to section">
                 <button className="btn sm ghost" onClick={() => jump('section-activity')}>Activity</button>
@@ -688,6 +912,8 @@ export default function Dashboard() {
                 <aside className="dash-side">
                     <Upcoming />
                     <Pomodoro />
+                    <WeeklyReview />
+                    <RecurringCard />
                 </aside>
             </div>
             <section id="section-database"><Database /></section>
@@ -696,6 +922,27 @@ export default function Dashboard() {
 }
 
 const CSS = `
+.ttl{display:grid;gap:12px;border-color:color-mix(in srgb,var(--tc,var(--ln)) 55%,var(--ln))}
+.ttl-head{display:flex;gap:16px;align-items:center}.ttl-head h2{margin:0}.ttl-head p{margin:2px 0 0}
+.ttl-badge{font-size:46px;line-height:1;filter:drop-shadow(0 0 10px color-mix(in srgb,var(--tc,transparent) 60%,transparent))}
+.ttl-tiers{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+.ttl-tier{display:grid;justify-items:center;gap:1px;padding:8px 4px;border-radius:10px;border:1px solid var(--ln);background:var(--sf2);opacity:.55;text-align:center}
+.ttl-tier span{font-size:22px}.ttl-tier small{color:var(--mu);font-size:11px}
+.ttl-tier.got{opacity:1;border-color:var(--tc);background:color-mix(in srgb,var(--tc) 14%,var(--sf2))}
+.ttl-days{display:flex;gap:3px;flex-wrap:wrap}.ttl-days i{width:14px;height:14px;border-radius:4px;background:var(--ln)}
+.ttl-days i.on{background:var(--ok)}.ttl-days i.today{outline:2px solid var(--ac);outline-offset:1px}
+.ttl-shelf{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.ttl-trophy{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--tc);background:color-mix(in srgb,var(--tc) 12%,var(--sf2))}
+@media(max-width:640px){.ttl-tiers{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.wr-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.wr-grid div{display:grid;padding:8px;border-radius:8px;background:var(--sf2)}
+.wr-grid b{font:700 18px var(--head)}.wr-grid span{font-size:12px;color:var(--mu)}
+.wr-bars{display:flex;gap:6px;align-items:flex-end;height:54px}.wr-bars div{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:2px}
+.wr-bars i{display:block;width:100%;border-radius:4px 4px 0 0;background:linear-gradient(var(--ac),var(--ok))}.wr-bars small{font-size:10px;color:var(--mu)}
+.rc-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}.rc-list li{display:flex;gap:6px;align-items:center;padding:6px 8px;border-radius:8px;background:var(--sf2)}
+.rc-list li span{display:grid;min-width:0}.rc-list small{font-size:11px}
+.td-pomo{font-size:11px;color:var(--mu);white-space:nowrap}
+.pomo-task{width:100%}
+.wk-search{margin-left:auto;width:170px}.wk-keys{margin:2px 0 6px}.wk-keys kbd{font:600 11px var(--head);padding:1px 6px;border:1px solid var(--ln);border-radius:5px;background:var(--sf2)}
 .dash{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;grid-template-columns:minmax(0,1fr);gap:20px}
 .dash-hero{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(0,1fr);gap:20px}
 .dash-jump{display:flex;flex-wrap:wrap;gap:6px;margin:-8px 0 -4px}
