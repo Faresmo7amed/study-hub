@@ -928,7 +928,7 @@ export default function Dashboard() {
                 <StreakCard />
             </div>
             <TitleCard />
-            <div id="section-activity"><Contributions /></div>
+            <div id="section-activity" className="dash-fit"><Contributions /></div>
             <nav className="dash-jump" aria-label="Jump to section">
                 <button className="btn sm ghost" onClick={() => jump('section-activity')}>Activity</button>
                 <button className="btn sm ghost" onClick={() => jump('section-week')}>Week</button>
@@ -945,7 +945,7 @@ export default function Dashboard() {
                     <RecurringCard />
                 </aside>
             </div>
-            <section id="section-database"><Database /></section>
+            <section id="section-database" className="dash-fit"><Database /></section>
         </div>
     )
 }
@@ -1073,6 +1073,12 @@ const CSS = `
 .ev-swatch{width:26px;height:26px;border-radius:50%;border:2px solid transparent;cursor:pointer}.ev-swatch.on{border-color:var(--tx);box-shadow:0 0 0 2px var(--sf) inset}
 .pomo-time{font:700 52px var(--head);font-variant-numeric:tabular-nums;text-align:center;line-height:1.1}
 .pomo-time.brk{color:var(--ok)}
+.dash{overflow-x:clip}
+.dash>*{min-width:0}
+.dash-fit{min-width:0;max-width:100%;overflow-x:auto;padding-bottom:28px;margin-bottom:-28px}
+.ttl,.st,.wk,.cal,.side-card{grid-template-columns:minmax(0,1fr)}
+.st-week{grid-template-columns:repeat(7,minmax(0,1fr))}
 @media(max-width:1100px){.dash-hero,.dash-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:380px){.st-day span{width:26px;height:26px;font-size:12px}}
 @media(max-width:640px){.dc{grid-template-columns:1fr}.dc-ring{justify-self:center}.dc h1{font-size:36px}.cal-cell{min-height:64px}.cal-evs i{display:none}}
 `
