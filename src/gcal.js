@@ -121,10 +121,9 @@ async function pool(jobs, size = 2) {
 /* ---------- converting between the two formats ---------- */
 const tz = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 const localDateTime = d => `${iso(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
-export const evSig = e => JSON.stringify([String(e.title || '').trim(), e.date, e.time || '', e.notes || '', Number(e.remind) || 0])
-
+export const evSig = e => JSON.stringify([String(e.title || '').trim(), e.date, e.time || '', e.notes || '', Number(e.remind) || 0, ...(e.done ? ['done'] : [])])
 export function toGoogle(ev) {
-    const body = { summary: ev.title || '(no title)', description: ev.notes || '', extendedProperties: { private: { shEvent: ev.id } } }
+    const body = { summary: (ev.done ? '✓ ' : '') + (ev.title || '(no title)'), description: ev.notes || '', extendedProperties: { private: { shEvent: ev.id } } }
     if (ev.time) {
         const start = new Date(`${ev.date}T${ev.time}`)
         const end = new Date(start.getTime() + (Number(ev.dur) || 60) * 60000)
@@ -160,7 +159,8 @@ export function fromGoogle(g) {
             remind = popup ? Number(popup.minutes) || 0 : 0
         }
     }
-    return { title: g.summary || '(no title)', notes: g.description || '', date, time, remind, dur }
+    const done = /^✓\s/.test(g.summary || '')
+    return { title: (g.summary || '(no title)').replace(/^✓\s/, ''), notes: g.description || '', date, time, remind, dur, done }
 }
 
 const todoBody = t => ({

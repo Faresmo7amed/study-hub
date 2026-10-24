@@ -4,9 +4,9 @@ import { play } from './sound'
 import {
     BADGES, DAYS, MONTH_TIERS, STUDY_DEFAULT, TYPES, TYPE_KEYS, activeDaysIn, addDays, clamp, dayIndex, emptyWeek, hms, isHttp, iso, monthKey, monthLength, monthTrophies, tierState,
     normalizeUrl, notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
-    useNow, useStats, useStore, weekStart,
+    useNow, useStats, useStore, weekStart, fmt12
 } from './shared'
-import { EVENT_COLORS, carryYesterday, openTodoDetails, removeEvent, toggleTodo } from './todoActions'
+import { EVENT_COLORS, carryYesterday, openTodoDetails, removeEvent, toggleTodo, toggleEvent} from './todoActions'
 import { ShiftModal, detailsBadge } from './TodoTools'
 import { STREAK_MIN } from './StudyGroup'
 import { runRecurringNow } from './Rewards'
@@ -714,7 +714,7 @@ function CalendarCard() {
                             {(() => { const n = (((todos[iso(weekStart(d))] || [])[dayIndex(d)]) || []).length; return n > 0 ? <span className="cal-todo-n" title={`${n} todo${n > 1 ? 's' : ''}`}>☑ {n}</span> : null })()}
                             {past && <span className={'cal-check' + (active ? ' hot' : '')} title={active ? 'Day passed, you were active' : 'Day passed'}>✓</span>}
                             <span className="cal-evs">
-                                {evs.slice(0, 2).map(e => <i key={e.id} style={{ '--c': e.color }}>{e.time ? e.time + ' ' : ''}{e.title}</i>)}
+                                {evs.slice(0, 2).map(e => <i key={e.id} style={{ '--c': e.color }}>{e.done ? '✓ ' : ''}{e.time ? fmt12(e.time) + ' ' : ''}{e.title}</i>)}
                                 {evs.length > 2 && <em>+{evs.length - 2} more</em>}
                             </span>
                         </button>
@@ -738,8 +738,9 @@ function CalendarCard() {
                     {selEvents.map(e => (
                         <li key={e.id} style={{ '--c': e.color }}>
                             <span className="cal-dot" />
-                            <span className="cal-time">{e.time || 'All day'}</span>
-                            <div className="grow"><b>{e.title}</b>{e.gid && <span className="cal-g" title="Synced with Google Calendar">G</span>}{e.notes && <p className="muted small">{e.notes}</p>}</div>
+                            <input type="checkbox" checked={!!e.done} onChange={() => toggleEvent(e.id)} aria-label={`Mark ${e.title} done`} />
+                            <span className="cal-time">{e.time ? fmt12(e.time) : 'All day'}</span>
+                            <div className="grow"><b style={e.done ? { textDecoration: 'line-through', opacity: 0.6 } : undefined}>{e.title}</b>{e.gid && <span className="cal-g" title="Synced with Google Calendar">G</span>}{e.notes && <p className="muted small">{e.notes}</p>}</div>
                             {e.time && Number(e.remind) > 0 && <span className="small muted" title="Reminder">⏳ {e.remind >= 60 ? e.remind / 60 + 'h' : e.remind + 'm'}</span>}
                             <button className="btn sm ghost" onClick={() => setModal(e)}>Edit</button>
                             <button className="btn sm ghost danger" onClick={() => removeEvent(e)} aria-label={`Delete ${e.title}`}>Delete</button>
@@ -771,7 +772,7 @@ function Upcoming() {
     const [events] = useStore('events', [])
     const list = events
         .map(e => ({ ...e, at: new Date(`${e.date}T${e.time || '23:59'}`).getTime() }))
-        .filter(e => e.at >= now.getTime())
+        .filter(e => e.at >= now.getTime() && !e.done)
         .sort((a, b) => a.at - b.at)
         .slice(0, 5)
 
@@ -881,9 +882,9 @@ function Pomodoro() {
     const nowD = new Date()
     const openToday = ((todos[iso(weekStart(nowD))] || [])[dayIndex(nowD)] || []).filter(t => !t.done)
     const toggleRef = useRef(toggle)
-    toggleRef.current = toggle
+    useEffect(() => { toggleRef.current = toggle })   // runs after every render, keeps the ref current
     useEffect(() => {
-        const onKey = e => {
+    const onKey = e => {
             if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey) return
             const el = e.target
             if (el && (el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(el.tagName))) return

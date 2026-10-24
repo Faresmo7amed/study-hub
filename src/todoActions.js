@@ -109,6 +109,13 @@ export function removeEvent(ev) {
     })
 }
 
+export function toggleEvent(id) {
+    const ev = getStore('events', []).find(x => x.id === id)
+    if (!ev) return
+    setStore('events', cur => cur.map(x => (x.id === id ? { ...x, done: !x.done } : x)), [])
+    play(ev.done ? 'uncheck' : 'check')
+}
+
 /* ---------- moving todos between days ---------- */
 
 // Moves the todos with these ids from one date to another (any week). The todos keep their id, details and done state.

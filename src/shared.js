@@ -171,6 +171,13 @@ export const uid = () => Math.random().toString(36).slice(2, 9)
 export const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n))
 export const pad = n => String(n).padStart(2, '0')
 
+// "14:05" -> "2:05 PM". Storage stays 24-hour; only the display changes.
+export const fmt12 = t => {
+    if (!t) return ''
+    const [h, m] = t.split(':').map(Number)
+    return `${h % 12 || 12}:${pad(m)} ${h < 12 ? 'AM' : 'PM'}`
+}
+
 // Links typed by the user: only web links are ever shown or opened, so a link can never run code
 export const isHttp = v => /^https?:\/\//i.test(v)
 export const normalizeUrl = v => {

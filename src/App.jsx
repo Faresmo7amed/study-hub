@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
     BADGES, GLOBAL_CSS, checkBackup, dayIndex, dismissToast, downloadBackup, getStore, importAll, iso, notify, registerWorker, setStore,
-    systemNotify, useNow, useStats, useStore, useToasts, weekStart,
+    systemNotify, useNow, useStats, useStore, useToasts, weekStart, fmt12
 } from './shared'
 import Dashboard from './Dashboard'
 import Notes from './Notes'
@@ -189,9 +189,10 @@ function Reminders() {
         const fire = (ev, kind) => {
             const late = t - new Date(`${ev.date}T${ev.time}`).getTime()
             const title = ev.title || 'Event'
+            const tm = fmt12(ev.time)
             const body = kind === 'pre'
-                ? `Starts at ${ev.time} (in ${Math.max(1, Math.round(-late / 60000))} min)`
-                : late > 120000 ? `Started at ${ev.time}` : `Starting now (${ev.time})`
+                ? `Starts at ${tm} (in ${Math.max(1, Math.round(-late / 60000))} min)`
+                : late > 120000 ? `Started at ${tm}` : `Starting now (${tm})`
             notify({
                 title,
                 body: ev.notes ? `${body}. ${ev.notes}` : body,
@@ -207,7 +208,7 @@ function Reminders() {
         }
 
         events.forEach(ev => {
-            if (!ev.time) return
+            if (!ev.time || ev.done) return
             const at = new Date(`${ev.date}T${ev.time}`).getTime()
             const lead = Number(ev.remind) || 0
             const preKey = `${ev.id}|${ev.date}|${ev.time}|pre`
@@ -246,7 +247,10 @@ function Reminders() {
         const due = snoozed.current.filter(s => s.at <= t)
         if (due.length) {
             snoozed.current = snoozed.current.filter(s => s.at > t)
-            due.forEach(s => notify({ title: s.ev.title || 'Event', body: 'Snoozed reminder', icon: '⏰', sticky: true }))
+                        due.forEach(s => {
+                const current = getStore('events', []).find(x => x.id === s.ev.id)
+                if (current && !current.done) notify({ title: current.title || 'Event', body: 'Snoozed reminder', icon: '⏰', sticky: true })
+            })
             play('reminder')
         }
 

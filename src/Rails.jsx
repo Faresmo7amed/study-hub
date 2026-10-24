@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import {
     DAYS, STUDY_DEFAULT, TYPES, TYPE_KEYS, addDays, addTodoToday, dayIndex, hms, isHttp, iso, normalizeUrl, parseISO, quoteOfDay,
-    todayISO, uid, until, useNow, useStats, useStore, weekStart,
+    todayISO, uid, until, useNow, useStats, useStore, weekStart, fmt12
 } from './shared'
-import { EVENT_COLORS, openTodoDetails, removeEvent, toggleTodo } from './todoActions'
+import { EVENT_COLORS, openTodoDetails, removeEvent, toggleTodo, toggleEvent } from './todoActions'
 import { loadRoadmaps, nextUp, openRoadmap, roadmapList } from './Roadmap'
 import { MAX_SESSION, STREAK_MIN, fmtMin, pauseSession, resumeSession, runActive, runElapsed, runRunning, startSession, stopSession, streakOf } from './StudyGroup'
 import { SocialLinks, openSettings } from './Settings'
@@ -155,7 +155,7 @@ function MiniCalendar() {
 
     const nextEvent = useMemo(() => events
         .map(e => ({ ...e, at: new Date(`${e.date}T${e.time || '23:59'}`).getTime() }))
-        .filter(e => e.at >= now.getTime())
+        .filter(e => e.at >= now.getTime() && !e.done)
         .sort((a, b) => a.at - b.at)[0], [events, now])
 
     const hint = past
@@ -203,7 +203,8 @@ function MiniCalendar() {
                 <ul className="rail-up">
                     {dayEvents.map(e => (
                         <li key={e.id} className="mc-ev" style={{ '--c': e.color }}>
-                            <span className="small grow"><b>{e.time || 'All day'}</b> {e.title}{e.gid && <span className="cal-g" title="Synced with Google Calendar">G</span>}</span>
+                            <input type="checkbox" checked={!!e.done} onChange={() => toggleEvent(e.id)} aria-label={`Mark ${e.title} done`} />
+                            <span className="small grow" style={e.done ? { textDecoration: 'line-through', opacity: 0.6 } : undefined}><b>{e.time ? fmt12(e.time) : 'All day'}</b> {e.title}{e.gid && <span className="cal-g" title="Synced with Google Calendar">G</span>}</span>
                             <button className="icon-btn" onClick={() => removeEvent(e)} aria-label={`Delete ${e.title}`} title="Delete event">×</button>
                         </li>
                     ))}
@@ -271,7 +272,7 @@ export function RightRail({ sheet = false }) {
     const ws = weekStart(now)
     const upcoming = events
         .map(e => ({ ...e, at: new Date(`${e.date}T${e.time || '23:59'}`).getTime() }))
-        .filter(e => e.at >= now.getTime())
+        .filter(e => e.at >= now.getTime() && !e.done)
         .sort((a, b) => a.at - b.at)
         .slice(0, 3)
     const hideLinks = useHidden('links')
