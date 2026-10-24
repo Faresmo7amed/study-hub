@@ -659,6 +659,30 @@ function makeApi(update) {
             if (d.active === tid) d.active = d.order[0]
         })),
         setActive: id => update(d => { d.active = id }),
+        // Drag and drop: put a row (or a table tab) before or after another one
+        reorderRows: (tid, fromId, toId, after) => update(d => {
+            const rows = d.tables[tid].rows
+            const i = rows.findIndex(r => r.id === fromId)
+            if (i < 0 || fromId === toId) return
+            const [item] = rows.splice(i, 1)
+            const j = rows.findIndex(r => r.id === toId)
+            if (j < 0) rows.push(item)
+            else rows.splice(after ? j + 1 : j, 0, item)
+        }),
+        moveRow: act('move', (tid, rid, dir) => update(d => {
+            const rows = d.tables[tid].rows
+            const i = rows.findIndex(r => r.id === rid)
+            const j = i + dir
+            if (i < 0 || j < 0 || j >= rows.length) return
+            ;[rows[i], rows[j]] = [rows[j], rows[i]]
+        })),
+        reorderTables: (fromId, toId, after) => update(d => {
+            const order = d.order.filter(x => x !== fromId)
+            const j = order.indexOf(toId)
+            if (fromId === toId || j < 0 || !d.order.includes(fromId)) return
+            order.splice(after ? j + 1 : j, 0, fromId)
+            d.order = order
+        }),
         reset: () => update(() => seedDB()),
     }
 }
@@ -1297,12 +1321,31 @@ function TableMenu({ anchor, onClose, db, table, api }) {
     )
 }
 
+/* ---------- drag and drop helpers ----------
+   Native HTML5 drag and drop. `dragging` says what is being dragged, because a drop target cannot read the data while
+   the pointer is still moving. Kinds: 'block' (a group), 'table' (a tab), 'row'. Phones without drag support use the arrow buttons. */
+let dragging = null
+const startDrag = (kind, id, scope) => e => {
+    dragging = { kind, id, scope }
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', kind + ':' + id)
+    const box = e.currentTarget.closest('tr, .nt-tabs button, .nt') || e.currentTarget
+    if (e.dataTransfer.setDragImage && kind !== 'block') e.dataTransfer.setDragImage(box, 12, 12)
+}
+const endDrag = set => () => { dragging = null; set(null) }
+const edgeOf = (e, horizontal) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    return horizontal ? (e.clientX < r.left + r.width / 2 ? 'before' : 'after') : (e.clientY < r.top + r.height / 2 ? 'before' : 'after')
+}
+
 function RowMenu({ anchor, onClose, table, row, api }) {
     const [armed, setArmed] = useState(false)
     return (
         <Pop anchor={anchor} onClose={onClose} width={200}>
             <button className="nt-item" onClick={() => { api.peek(row.id); onClose() }}><span className="nt-ti">↗</span>Open</button>
             <button className="nt-item" onClick={() => { api.duplicateRow(table.id, row.id); onClose() }}><span className="nt-ti">⧉</span>Duplicate</button>
+            <button className="nt-item" disabled={table.rows[0] && table.rows[0].id === row.id} onClick={() => { api.moveRow(table.id, row.id, -1); onClose() }}><span className="nt-ti">↑</span>Move up</button>
+            <button className="nt-item" disabled={table.rows.length > 0 && table.rows[table.rows.length - 1].id === row.id} onClick={() => { api.moveRow(table.id, row.id, 1); onClose() }}><span className="nt-ti">↓</span>Move down</button>
             <button className="nt-item danger" onClick={() => { if (armed) { api.deleteRow(table.id, row.id); onClose() } else setArmed(true) }}>
                 <span className="nt-ti">🗑</span>{armed ? 'Click again to delete' : 'Delete'}
             </button>
@@ -1338,7 +1381,7 @@ function Peek({ db, table, row, api, onClose }) {
 /* ============================================================
    The database block
    ============================================================ */
-function DatabaseBlock({ blockId, canRemove, onRemove }) {
+function DatabaseBlock({ blockId, canRemove, onRemove, group }) {
     const [raw, , updateRaw] = useStore('database', seedStore)
     const [armedBlock, setArmedBlock] = useState(false)
     const store = useMemo(() => normalizeStore(raw), [raw])
@@ -1355,6 +1398,7 @@ function DatabaseBlock({ blockId, canRemove, onRemove }) {
     const [query, setQuery] = useState('')
     const [peekId, setPeekId] = useState(null)
     const [menu, setMenu] = useState(null)
+    const [over, setOver] = useState(null) // { kind: 'row' | 'table', id, edge } while something is dragged over it
     const api = useMemo(() => ({ ...makeApi(update), peek: setPeekId }), [update])
 
     const table = db.tables[db.active] || db.tables[db.order[0]]
@@ -1363,6 +1407,7 @@ function DatabaseBlock({ blockId, canRemove, onRemove }) {
     const rows = useMemo(() => visibleRows(db, table, query), [db, table, query])
     const peekRow = peekId && table.rows.find(r => r.id === peekId)
     const width = 34 + props.reduce((sum, p) => sum + (p.width || 180), 0) + 44
+    const canDragRows = !table.sort
     const filterCount = (table.filters || []).length
     const sortProp = table.sort && table.props.find(p => p.id === table.sort.prop)
     const closeMenu = () => setMenu(null)
@@ -1375,11 +1420,38 @@ function DatabaseBlock({ blockId, canRemove, onRemove }) {
     }
 
     return (
-        <section className="card nt" aria-label="Databases">
+        <section className={'card nt' + (group && group.edge ? ' nt-gdrop-' + group.edge : '')} aria-label="Databases"
+            onDragOver={group ? group.onOver : undefined} onDragLeave={group ? group.onLeave : undefined} onDrop={group ? group.onDrop : undefined}>
             <style>{CSS}</style>
             <div className="nt-tabs" role="tablist">
+                {group && (
+                    <span className="nt-grouptools">
+                        <span className="nt-grip" draggable onDragStart={group.onStart} onDragEnd={group.onEnd} title="Drag to reorder this group" aria-label="Drag to reorder this group">⠿</span>
+                        <button type="button" disabled={!group.canUp} onClick={() => group.move(-1)} aria-label="Move group up" title="Move group up">↑</button>
+                        <button type="button" disabled={!group.canDown} onClick={() => group.move(1)} aria-label="Move group down" title="Move group down">↓</button>
+                    </span>
+                )}
                 {db.order.map(id => (
-                    <button key={id} role="tab" aria-selected={id === table.id} className={id === table.id ? 'on' : ''} onClick={() => { api.setActive(id); setPeekId(null); setQuery('') }}>
+                    <button key={id} role="tab" aria-selected={id === table.id} draggable
+                        className={(id === table.id ? 'on' : '') + (over && over.kind === 'table' && over.id === id ? ' nt-tdrop-' + over.edge : '')}
+                        onClick={() => { api.setActive(id); setPeekId(null); setQuery('') }}
+                        onDragStart={startDrag('table', id, db.id)} onDragEnd={endDrag(setOver)}
+                        onDragOver={e => {
+                            if (!dragging || dragging.kind !== 'table' || dragging.scope !== db.id) return
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setOver({ kind: 'table', id, edge: edgeOf(e, true) })
+                        }}
+                        onDragLeave={() => setOver(null)}
+                        onDrop={e => {
+                            if (!dragging || dragging.kind !== 'table' || dragging.scope !== db.id) return
+                            e.preventDefault()
+                            e.stopPropagation()
+                            api.reorderTables(dragging.id, id, edgeOf(e, true) === 'after')
+                            play('move')
+                            dragging = null
+                            setOver(null)
+                        }}>
                         <Icon value={db.tables[id].icon} size={15} /> {db.tables[id].name}
                     </button>
                 ))}
@@ -1422,8 +1494,29 @@ function DatabaseBlock({ blockId, canRemove, onRemove }) {
                     </thead>
                     <tbody>
                         {rows.map(r => (
-                            <tr key={r.id} className={peekId === r.id ? 'on' : ''}>
-                                <td className="nt-gut"><button onClick={openMenu('row', { rowId: r.id })} aria-label="Row actions">⋮</button></td>
+                            <tr key={r.id} className={(peekId === r.id ? 'on ' : '') + (over && over.kind === 'row' && over.id === r.id ? 'nt-rdrop-' + over.edge : '')}
+                                onDragOver={e => {
+                                    if (!dragging || dragging.kind !== 'row' || dragging.scope !== table.id) return
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    setOver({ kind: 'row', id: r.id, edge: edgeOf(e, false) })
+                                }}
+                                onDrop={e => {
+                                    if (!dragging || dragging.kind !== 'row' || dragging.scope !== table.id) return
+                                    e.preventDefault()
+                                    e.stopPropagation()
+                                    api.reorderRows(table.id, dragging.id, r.id, edgeOf(e, false) === 'after')
+                                    play('move')
+                                    dragging = null
+                                    setOver(null)
+                                }}>
+                                <td className="nt-gut">
+                                    <div className="nt-gutin">
+                                        <span className={'nt-rgrip' + (canDragRows ? '' : ' off')} draggable={canDragRows} onDragStart={startDrag('row', r.id, table.id)} onDragEnd={endDrag(setOver)}
+                                            title={canDragRows ? 'Drag to reorder' : 'Clear the sort to reorder rows by hand'} aria-hidden="true">⠿</span>
+                                        <button onClick={openMenu('row', { rowId: r.id })} aria-label="Row actions">⋮</button>
+                                    </div>
+                                </td>
                                 {props.map(p => <td key={p.id}><Cell db={db} table={table} row={r} prop={p} api={api} /></td>)}
                                 <td />
                             </tr>
@@ -1545,11 +1638,58 @@ export default function Databases() {
         })
     }
 
+    const [gover, setGover] = useState(null) // { id, edge } while a group is dragged over another group
+    const moveBlock = (fromId, toId, after) => {
+        play('move')
+        updateRaw(d => {
+            const s = normalizeStore(d)
+            const i = s.blocks.findIndex(b => b.id === fromId)
+            if (i < 0 || fromId === toId) return s
+            const [item] = s.blocks.splice(i, 1)
+            const j = s.blocks.findIndex(b => b.id === toId)
+            if (j < 0) s.blocks.push(item)
+            else s.blocks.splice(after ? j + 1 : j, 0, item)
+            return s
+        })
+    }
+    const shiftBlock = (id, dir) => {
+        play('move')
+        updateRaw(d => {
+            const s = normalizeStore(d)
+            const i = s.blocks.findIndex(b => b.id === id)
+            const j = i + dir
+            if (i < 0 || j < 0 || j >= s.blocks.length) return s
+            ;[s.blocks[i], s.blocks[j]] = [s.blocks[j], s.blocks[i]]
+            return s
+        })
+    }
+    const groupProps = (b, i) => (store.blocks.length < 2 ? null : {
+        edge: gover && gover.id === b.id ? gover.edge : '',
+        canUp: i > 0,
+        canDown: i < store.blocks.length - 1,
+        move: dir => shiftBlock(b.id, dir),
+        onStart: startDrag('block', b.id, 'blocks'),
+        onEnd: endDrag(setGover),
+        onOver: e => {
+            if (!dragging || dragging.kind !== 'block' || dragging.id === b.id) return
+            e.preventDefault()
+            setGover({ id: b.id, edge: edgeOf(e, false) })
+        },
+        onLeave: e => { if (!e.currentTarget.contains(e.relatedTarget)) setGover(null) },
+        onDrop: e => {
+            if (!dragging || dragging.kind !== 'block') return
+            e.preventDefault()
+            moveBlock(dragging.id, b.id, edgeOf(e, false) === 'after')
+            dragging = null
+            setGover(null)
+        },
+    })
+
     return (
         <div className="nt-blocks">
             <style>{'.nt-blocks{display:grid;gap:20px}'}</style>
-            {store.blocks.map(b => (
-                <DatabaseBlock key={b.id} blockId={b.id} canRemove={store.blocks.length > 1} onRemove={() => removeBlock(b.id)} />
+            {store.blocks.map((b, i) => (
+                <DatabaseBlock key={b.id} blockId={b.id} canRemove={store.blocks.length > 1} onRemove={() => removeBlock(b.id)} group={groupProps(b, i)} />
             ))}
             <div><button className="btn" onClick={addBlock}>+ New database group</button></div>
         </div>
@@ -1582,6 +1722,17 @@ const CSS = `
 .nt-trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .nt-addp{border:0;background:none;width:100%;height:36px;cursor:pointer;color:var(--mu);font-size:18px}.nt-addp:hover{background:var(--sf2);color:var(--tx)}
 .nt-gut button{border:0;background:none;color:var(--mu);cursor:pointer;opacity:0;width:100%;height:36px}
+.nt-gutin{display:flex;align-items:center;height:36px}.nt-gutin button{flex:1;min-width:0;width:auto}
+.nt-rgrip,.nt-grip{cursor:grab;color:var(--mu);user-select:none;font-size:14px;line-height:1;padding:4px 2px;opacity:0}
+.nt-grip{opacity:.7;font-size:16px;padding:4px 6px;border-radius:6px}.nt-grip:hover{background:var(--sf2);opacity:1}
+.nt-rgrip.off{cursor:not-allowed}
+.nt-table tr:hover .nt-rgrip{opacity:.8}
+@media(hover:none){.nt-rgrip{display:none}}
+.nt-grouptools{display:inline-flex;align-items:center;gap:0;margin-right:4px}
+.nt-grouptools button{padding:3px 7px!important}.nt-grouptools button:disabled{opacity:.3;cursor:default}
+.nt-rdrop-before td{box-shadow:inset 0 3px 0 var(--ac)}.nt-rdrop-after td{box-shadow:inset 0 -3px 0 var(--ac)}
+.nt-tabs button.nt-tdrop-before{box-shadow:inset 3px 0 0 var(--ac)}.nt-tabs button.nt-tdrop-after{box-shadow:inset -3px 0 0 var(--ac)}
+.nt-gdrop-before{box-shadow:0 -4px 0 0 var(--ac),var(--shadow)}.nt-gdrop-after{box-shadow:0 4px 0 0 var(--ac),var(--shadow)}
 .nt-table tr:hover .nt-gut button,.nt-gut button:focus-visible{opacity:1}
 .nt-table tbody tr:hover{background:color-mix(in srgb,var(--ac) 4%,transparent)}.nt-table tbody tr.on{background:color-mix(in srgb,var(--ac) 8%,transparent)}
 .nt-cell{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-height:36px;padding:5px 10px;width:100%;line-height:1.35;word-break:break-word}

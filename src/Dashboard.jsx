@@ -6,7 +6,8 @@ import {
     normalizeUrl, notify, pad, parseISO, quoteOfDay, QUOTES, setStore, startOfDay, systemNotify, todayISO, uid, until,
     useNow, useStats, useStore, weekStart,
 } from './shared'
-import { EVENT_COLORS, carryYesterday, removeEvent, toggleTodo } from './todoActions'
+import { EVENT_COLORS, carryYesterday, openTodoDetails, removeEvent, toggleTodo } from './todoActions'
+import { ShiftModal, detailsBadge } from './TodoTools'
 import { STREAK_MIN } from './StudyGroup'
 import { runRecurringNow } from './Rewards'
 import Contributions from './Heatmap'
@@ -318,13 +319,20 @@ function RecurringCard() {
    Weekly board (Saturday to Friday)
    ============================================================ */
 
-function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn }) {
+function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn, onShift }) {
     const [editing, setEditing] = useState(false)
     const [edge, setEdge] = useState(null) // 'top' | 'bottom' | null: where a dragged todo would land
     const [draft, setDraft] = useState(todo.text)
     const [linkDraft, setLinkDraft] = useState(todo.link || '')
     const meta = TYPES[todo.type] || TYPES.task
     const hasLink = isHttp(todo.link || '')
+    const badge = detailsBadge(todo)
+    const extras = (
+        <>
+            <button className="icon-btn td-open" onClick={() => openTodoDetails(todo.id)} aria-label={`Open details of ${todo.text}`} title="Open details window">Open</button>
+            <button className="icon-btn td-open" onClick={() => onShift(todo)} aria-label={`Move ${todo.text} to another day`} title="Move to another day">→</button>
+        </>
+    )
 
     const startEdit = () => {
         setDraft(todo.text)
@@ -374,13 +382,16 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn }) {
                     <span className="td-title">
                         <a className="td-text td-link" href={todo.link} target="_blank" rel="noopener noreferrer" draggable={false} title={todo.link}>{todo.text}</a>
                         <button className="icon-btn td-pen" onClick={startEdit} aria-label="Edit todo and link" title="Edit">✎</button>
+                        {extras}
                     </span>
                 ) : (
                     <span className="td-title">
                         <button className="td-text" onClick={startEdit} title="Click to edit">{todo.text}</button>
                         <button className="icon-btn td-pen" onClick={startEdit} aria-label="Edit todo" title="Edit">✎</button>
+                        {extras}
                     </span>
                 )}
+                {badge && <span className="td-pomo" title="Sub-todos done in the details">☑ {badge.done}/{badge.total}</span>}
                 {todo.pomos > 0 && <span className="td-pomo" title="Focus sessions spent on this todo">🍅 {todo.pomos}</span>}
                 {todo.rid && <span className="td-pomo" title="Repeats automatically">🔁</span>}
                 <select className="td-type" value={todo.type} onChange={e => onEdit(todo.id, { type: e.target.value })} style={{ '--c': meta.color }} aria-label="Type">
@@ -392,7 +403,7 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn }) {
     )
 }
 
-function DayColumn({ day, date, list, isToday, isPast, filter, query = '', onAdd, onToggle, onEdit, onDelete, onMove }) {
+function DayColumn({ day, date, list, isToday, isPast, filter, query = '', onAdd, onToggle, onEdit, onDelete, onMove, onShift }) {
     const [adding, setAdding] = useState(false)
     const [text, setText] = useState('')
     const [type, setType] = useState('task')
@@ -432,7 +443,7 @@ function DayColumn({ day, date, list, isToday, isPast, filter, query = '', onAdd
                 {shown.map(t => (
                     <TodoItem key={t.id} todo={t} day={day} onToggle={(id, el) => onToggle(day, id, el)}
                         onEdit={(id, patch) => onEdit(day, id, patch)} onDelete={id => onDelete(day, id)}
-                        onDropOn={(from, id, targetId, after) => onMove(from, id, day, targetId, after)} />
+                        onDropOn={(from, id, targetId, after) => onMove(from, id, day, targetId, after)} onShift={t => onShift(iso(date), t.id)} />
                 ))}
             </ul>
             {shown.length === 0 && !adding && <p className="muted small wk-empty">{list.length ? 'Nothing of this type.' : isPast ? 'Nothing planned.' : 'Plan something for this day.'}</p>}
@@ -462,6 +473,7 @@ function WeekBoard() {
     const [offset, setOffset] = useState(0)
     const [filter, setFilter] = useState('all')
     const [query, setQuery] = useState('')
+    const [shift, setShift] = useState(null) // { from: 'YYYY-MM-DD', ids: [] } while the shift window is open
     const now = useNow(30000)
     const ws = addDays(weekStart(now), offset * 7)
     const key = iso(ws)
@@ -512,7 +524,7 @@ function WeekBoard() {
                 const cur = ensure(d)
                 prev.forEach((list, i) => list.filter(t => !t.done).forEach(t => {
                     if (cur[i].some(x => x.text === t.text && x.type === t.type)) return
-                    cur[i].push({ id: uid(), text: t.text, type: t.type, ...(t.link ? { link: t.link } : {}), done: false, doneOn: null })
+                    cur[i].push({ id: uid(), text: t.text, type: t.type, ...(t.link ? { link: t.link } : {}), ...(t.details ? { details: t.details } : {}), done: false, doneOn: null })
                     count += 1
                 }))
             })
@@ -562,6 +574,7 @@ function WeekBoard() {
                     <button className="btn sm" onClick={() => setOffset(offset + 1)} aria-label="Next week">›</button>
                     <button className="btn sm" onClick={carryOver} title="Copy unfinished todos from the previous week">Carry over unfinished</button>
                     <button className="btn sm" onClick={moveYesterday} title="Move yesterday's unfinished todos to today">Yesterday → today</button>
+                    <button className="btn sm" onClick={() => setShift({ from: today, ids: [] })} title="Pick todos from one day and move them to another day">Shift todos…</button>
                 </div>
             </div>
             <div className="seg" role="group" aria-label="Filter by type">
@@ -579,10 +592,11 @@ function WeekBoard() {
                     return (
                         <DayColumn key={i} day={i} date={date} list={week[i]} filter={filter} query={query}
                             isToday={iso(date) === today} isPast={iso(date) < today}
-                            onAdd={add} onToggle={(day, id, el) => toggleTodo(key, day, id, el)} onEdit={edit} onDelete={remove} onMove={move} />
+                            onAdd={add} onToggle={(day, id, el) => toggleTodo(key, day, id, el)} onEdit={edit} onDelete={remove} onMove={move} onShift={(from, id) => setShift({ from, ids: [id] })} />
                     )
                 })}
             </div>
+            {shift && <ShiftModal from={shift.from} ids={shift.ids} onClose={() => setShift(null)} />}
         </section>
     )
 }
@@ -670,7 +684,7 @@ function CalendarCard() {
 
     const selDate = parseISO(selected)
     const selWeek = todos[iso(weekStart(selDate))]
-    const selTodos = selWeek ? selWeek[dayIndex(selDate)] : []
+    const selTodos = (selWeek ? selWeek[dayIndex(selDate)] : null) || []
     const selEvents = byDate[selected] || []
     const newEvent = date => ({ title: '', date, time: '09:00', remind: 10, color: EVENT_COLORS[0], notes: '' })
 
@@ -697,6 +711,7 @@ function CalendarCard() {
                             className={'cal-cell' + (d.getMonth() !== cursor.getMonth() ? ' out' : '') + (key === todayKey ? ' today' : '') + (key === selected ? ' sel' : '') + (past ? ' past' : '')}
                             aria-label={d.toLocaleDateString(undefined, { dateStyle: 'full' }) + (evs.length ? `, ${evs.length} events` : '')}>
                             <span className="cal-n">{d.getDate()}</span>
+                            {(() => { const n = (((todos[iso(weekStart(d))] || [])[dayIndex(d)]) || []).length; return n > 0 ? <span className="cal-todo-n" title={`${n} todo${n > 1 ? 's' : ''}`}>☑ {n}</span> : null })()}
                             {past && <span className={'cal-check' + (active ? ' hot' : '')} title={active ? 'Day passed, you were active' : 'Day passed'}>✓</span>}
                             <span className="cal-evs">
                                 {evs.slice(0, 2).map(e => <i key={e.id} style={{ '--c': e.color }}>{e.time ? e.time + ' ' : ''}{e.title}</i>)}
@@ -724,13 +739,27 @@ function CalendarCard() {
                         <li key={e.id} style={{ '--c': e.color }}>
                             <span className="cal-dot" />
                             <span className="cal-time">{e.time || 'All day'}</span>
-                            <div className="grow"><b>{e.title}</b>{e.notes && <p className="muted small">{e.notes}</p>}</div>
+                            <div className="grow"><b>{e.title}</b>{e.gid && <span className="cal-g" title="Synced with Google Calendar">G</span>}{e.notes && <p className="muted small">{e.notes}</p>}</div>
                             {e.time && Number(e.remind) > 0 && <span className="small muted" title="Reminder">⏳ {e.remind >= 60 ? e.remind / 60 + 'h' : e.remind + 'm'}</span>}
                             <button className="btn sm ghost" onClick={() => setModal(e)}>Edit</button>
                             <button className="btn sm ghost danger" onClick={() => removeEvent(e)} aria-label={`Delete ${e.title}`}>Delete</button>
                         </li>
                     ))}
                 </ul>
+                {selTodos.length > 0 && (
+                    <>
+                        <h4 className="cal-sub">Todos</h4>
+                        <ul className="cal-todos">
+                            {selTodos.map(t => (
+                                <li key={t.id} className={t.done ? 'done' : ''}>
+                                    <input type="checkbox" checked={t.done} onChange={e => toggleTodo(iso(weekStart(selDate)), dayIndex(selDate), t.id, e.currentTarget)} aria-label={`Mark "${t.text}" as done`} />
+                                    <span className="grow">{(TYPES[t.type] || TYPES.task).icon} {t.text}</span>
+                                    <button className="btn sm ghost" onClick={() => openTodoDetails(t.id)}>Open</button>
+                                </li>
+                            ))}
+                        </ul>
+                    </>
+                )}
             </div>
             {modal && <EventModal initial={modal} onClose={() => setModal(null)} />}
         </section>
@@ -1006,6 +1035,12 @@ const CSS = `
 .td-title{display:flex;gap:6px;align-items:baseline;max-width:100%}
 .td-link{cursor:pointer;color:var(--ac);text-decoration:underline;text-underline-offset:2px}.td-link:hover{filter:brightness(1.15)}
 .td-pen{opacity:.45;padding:0 4px;font-size:13px}.td:hover .td-pen,.td-pen:focus-visible{opacity:1}
+.td-open{opacity:.45;padding:0 6px;font-size:12px;font-weight:600;border:1px solid var(--ln);border-radius:6px;line-height:1.5;align-self:center}.td:hover .td-open,.td-open:focus-visible{opacity:1}
+.td-title{flex-wrap:wrap}
+.cal-g{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;margin-left:6px;font-size:10px;font-weight:700;background:#4285f4;color:#fff;vertical-align:middle}
+.cal-sub{margin:10px 0 4px;font-size:14px;color:var(--mu)}
+.cal-todos{list-style:none;margin:0;padding:0;display:grid;gap:4px}.cal-todos li{display:flex;gap:8px;align-items:center;padding:4px 8px;border-radius:8px;background:var(--sf2)}.cal-todos li.done .grow{text-decoration:line-through;color:var(--mu)}
+.cal-todo-n{position:absolute;right:6px;bottom:4px;font-size:10px;font-weight:600;color:var(--mu)}
 .td-edit{display:grid;gap:5px;width:100%}
 .td-type{appearance:none;border:0;background:color-mix(in srgb,var(--c) 18%,transparent);color:color-mix(in srgb,var(--c) 65%,var(--tx));border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;cursor:pointer;width:auto}
 .td-x{opacity:0;padding:0 6px}.td:hover .td-x,.td-x:focus-visible{opacity:1}

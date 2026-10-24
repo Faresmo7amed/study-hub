@@ -122,6 +122,7 @@ export function exportAll() {
     } catch {return null}
     cache.forEach((value, key) => { if (!(key in data)) data[key] = value })
     delete data.sync // account bookkeeping, never part of a backup
+    delete data.gcal // holds a Google access token: it never leaves this device
     return { app: 'studyhub', version: 1, exportedAt: new Date().toISOString(), data }
 }
 
@@ -460,10 +461,37 @@ export const useToasts = () => useSyncExternalStore(subToasts, () => toasts)
 /* ============================================================
    Sound, system notifications, confetti
    ============================================================ */
-export function systemNotify(title, body) {
+// Registers the small service worker (public/sw.js). Phones only show notifications through a service worker.
+export async function registerWorker() {
     try {
-        if ('Notification' in window && Notification.permission === 'granted') new Notification(title, { body })
-    } catch {return null}
+        if (!('serviceWorker' in navigator) || !window.isSecureContext) return null
+        return await navigator.serviceWorker.register('/sw.js')
+    } catch {
+        return null
+    }
+}
+
+// A real system notification (like any other app). opts: { tag, sticky, url }.
+// It goes through the service worker when there is one, because Chrome on Android refuses `new Notification()`.
+export async function systemNotify(title, body, opts = {}) {
+    try {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return false
+        const options = {
+            body: body || '',
+            tag: opts.tag || undefined,
+            icon: '/icon-192.png',
+            badge: '/icon-192.png',
+            requireInteraction: Boolean(opts.sticky),
+            vibrate: [200, 100, 200],
+            data: { url: opts.url || '/#/dashboard' },
+        }
+        const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null
+        if (reg && reg.showNotification) await reg.showNotification(title, options)
+        else new Notification(title, options)
+        return true
+    } catch {
+        return false
+    }
 }
 
 export function confetti(x, y) {

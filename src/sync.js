@@ -16,8 +16,9 @@ const meta = () => getStore(META, {})
 const patchMeta = patch => setStore(META, cur => ({ ...cur, ...patch }), {})
 
 /* ---------- observable state for the UI ---------- */
-// phase: off | loading | signedout | syncing | dirty | synced | offline | error | choose
-let state = { phase: fb.configured ? 'loading' : 'off', user: null, message: '', lastSync: 0, choose: null }
+// phase: off | loading | signedout | pending | syncing | dirty | synced | offline | error | choose
+// access: none | checking | approved | pending | denied   (the owner approves every account, see firestore.rules)
+let state = { phase: fb.configured ? 'loading' : 'off', user: null, message: '', lastSync: 0, choose: null, access: 'none' }
 const subs = new Set()
 const set = patch => {
     state = { ...state, ...patch }
@@ -106,7 +107,7 @@ async function pushStep() {
 
 function schedulePush(delay = 2000) {
     clearTimeout(pushTimer)
-    if (state.user && state.phase !== 'choose') set({ phase: 'dirty' })
+    if (state.user && state.access === 'approved' && state.phase !== 'choose') set({ phase: 'dirty' })
     pushTimer = setTimeout(() => {
         run(async () => {
             await pushStep()
@@ -116,7 +117,7 @@ function schedulePush(delay = 2000) {
 }
 
 function refresh(force) {
-    if (!state.user || state.phase === 'choose') return
+    if (!state.user || state.access !== 'approved' || state.phase === 'choose') return
     if (!force && Date.now() - lastRefresh < 15000) return
     lastRefresh = Date.now()
     run(async () => {
@@ -127,6 +128,7 @@ function refresh(force) {
 }
 
 export function syncNow() {
+    if (state.access !== 'approved') return Promise.resolve()
     return run(async () => {
         set({ phase: 'syncing' })
         await pullStep()
@@ -168,9 +170,16 @@ async function adoptDevice(docs, uid) {
 }
 
 async function link(user) {
-    set({ user, phase: 'syncing', message: '', choose: null })
+    set({ user, phase: 'syncing', message: '', choose: null, access: 'checking' })
     try {
         await run(async () => {
+            const access = await fb.accessStatus(user)
+            if (access !== 'approved') {
+                set({ access, phase: 'pending' })
+                return
+            }
+            set({ access: 'approved' })
+            setStore('meta', cur => ({ ...cur, approvedUid: user.uid }), {}) // so the app still opens when you are offline
             const m = meta()
             if (m.uid === user.uid) {
                 await pullStep()
@@ -207,6 +216,12 @@ export function resolveChoice(which) {
     }).catch(handleError)
 }
 
+// Ask the server again whether this account has been approved (used by the "waiting" screen)
+export function recheckAccess() {
+    if (state.user) return link(state.user)
+    return Promise.resolve()
+}
+
 export async function signOutAndWipe() {
     await fb.logOut()
     clearLocalData()
@@ -239,7 +254,7 @@ export async function startSync() {
     try {
         await fb.onUser(user => {
             if (user) link(user)
-            else set({ user: null, phase: 'signedout', choose: null, message: '' })
+            else set({ user: null, phase: 'signedout', choose: null, message: '', access: 'none' })
         })
     } catch (e) {
         handleError(e)

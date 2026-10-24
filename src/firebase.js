@@ -19,6 +19,11 @@ const config = {
 
 export const configured = Boolean(config.apiKey && config.projectId && config.appId)
 
+// The owner of the app. Only this account can approve sign-ups (the rules check the same id).
+// Set VITE_ADMIN_UID to your Firebase user id (Authentication > Users > User UID).
+export const ADMIN_UID = env.VITE_ADMIN_UID || ''
+export const isAdmin = user => Boolean(user && ADMIN_UID && user.uid === ADMIN_UID)
+
 let sdk = null
 
 async function load() {
@@ -67,6 +72,90 @@ export async function resetPassword(email) {
 export async function logOut() {
     const { A, auth } = await load()
     await A.signOut(auth)
+}
+
+/* ---------- access control (the owner approves every new account) ----------
+   approved/{uid}   { email, at, by }                 exists = the account may use the app
+   requests/{uid}   { email, name, at, status }        status: 'pending' | 'denied'
+   The rules enforce this on the server. These functions only talk to those documents. */
+
+// 'approved' | 'pending' | 'denied'. Older accounts (that already have data) approve themselves once.
+export async function accessStatus(user) {
+    const { F, db } = await load()
+    const mine = await withTimeout(F.getDoc(F.doc(db, 'approved', user.uid)))
+    if (mine.exists()) return 'approved'
+    try {
+        await withTimeout(F.setDoc(F.doc(db, 'approved', user.uid), { email: user.email || '', at: Date.now(), by: isAdmin(user) ? 'owner' : 'legacy' }))
+        return 'approved'
+    } catch (e) {
+        if ((e && e.code) !== 'permission-denied') throw e
+    }
+    const ref = F.doc(db, 'requests', user.uid)
+    const req = await withTimeout(F.getDoc(ref))
+    if (req.exists() && req.data().status === 'denied') return 'denied'
+    if (!req.exists()) await withTimeout(F.setDoc(ref, { email: user.email || '', name: user.name || '', at: Date.now(), status: 'pending' }))
+    return 'pending'
+}
+
+export async function listRequests() {
+    const { F, db } = await load()
+    const snap = await withTimeout(F.getDocs(F.collection(db, 'requests')))
+    return snap.docs.map(d => ({ uid: d.id, ...d.data() })).sort((a, b) => (b.at || 0) - (a.at || 0))
+}
+
+export async function listApproved() {
+    const { F, db } = await load()
+    const snap = await withTimeout(F.getDocs(F.collection(db, 'approved')))
+    return snap.docs.map(d => ({ uid: d.id, ...d.data() })).sort((a, b) => (a.email || '').localeCompare(b.email || ''))
+}
+
+export async function approveUser(uid, email) {
+    const { F, db } = await load()
+    const batch = F.writeBatch(db)
+    batch.set(F.doc(db, 'approved', uid), { email: email || '', at: Date.now(), by: 'owner' })
+    batch.delete(F.doc(db, 'requests', uid))
+    await withTimeout(batch.commit())
+}
+
+export async function denyUser(uid, email) {
+    const { F, db } = await load()
+    await withTimeout(F.setDoc(F.doc(db, 'requests', uid), { email: email || '', name: '', at: Date.now(), status: 'denied' }))
+}
+
+export async function forgetRequest(uid) {
+    const { F, db } = await load()
+    await withTimeout(F.deleteDoc(F.doc(db, 'requests', uid)))
+}
+
+// Owner only: takes the access away and erases that user's cloud data. The sign-in record itself can only be
+// deleted in the Firebase console (Authentication > Users), because a web app cannot delete other people's logins.
+export async function removeUser(uid, email, keys) {
+    const { F, db } = await load()
+    for (const key of keys) await withTimeout(F.deleteDoc(F.doc(db, 'users', uid, 'data', key)))
+    await withTimeout(F.deleteDoc(F.doc(db, 'approved', uid)))
+    await denyUser(uid, email)
+}
+
+// The signed-in user deletes their own account: cloud data, approval, then the login. Sign in again first (recent login needed).
+export async function deleteMyAccount({ keys, groups, password }) {
+    const { A, F, db, auth } = await load()
+    const user = auth.currentUser
+    if (!user) throw new Error('You are not signed in.')
+    const google = user.providerData.some(p => p.providerId === 'google.com')
+    if (google && !password) await A.reauthenticateWithPopup(user, new A.GoogleAuthProvider())
+    else await A.reauthenticateWithCredential(user, A.EmailAuthProvider.credential(user.email, password || ''))
+    const uid = user.uid
+    for (const code of groups) {
+        try {
+            const shares = await F.getDocs(F.collection(db, 'groups', code, 'shares'))
+            for (const d of shares.docs) if (d.data().owner === uid) await F.deleteDoc(d.ref)
+            await F.deleteDoc(F.doc(db, 'groups', code, 'members', uid))
+        } catch { /* a group that is already gone is fine */ }
+    }
+    for (const key of keys) await withTimeout(F.deleteDoc(F.doc(db, 'users', uid, 'data', key)))
+    try { await F.deleteDoc(F.doc(db, 'approved', uid)) } catch { /* the owner's own doc can stay */ }
+    try { await F.deleteDoc(F.doc(db, 'requests', uid)) } catch { /* may not exist */ }
+    await A.deleteUser(user)
 }
 
 /* ---------- data ---------- */
@@ -199,4 +288,29 @@ export async function watchGroupEvents(code, onData, onError) {
         snap => onData(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
         onError,
     )
+}
+
+/* ---------- roadmap copies for other accounts ----------
+   roadmapShares/{code}   { owner, title, data, createdAt, updatedAt }   data is the whole roadmap as a JSON string.
+   The code is the document id. Anyone approved who knows the code can read it; nobody can list the codes. */
+export async function saveRoadmapShare(code, share) {
+    const { F, db } = await load()
+    await withTimeout(F.setDoc(F.doc(db, 'roadmapShares', code), share))
+}
+
+export async function getRoadmapShare(code) {
+    const { F, db } = await load()
+    const snap = await withTimeout(F.getDoc(F.doc(db, 'roadmapShares', code)))
+    return snap.exists() ? snap.data() : null
+}
+
+export async function myRoadmapShares(uid) {
+    const { F, db } = await load()
+    const snap = await withTimeout(F.getDocs(F.query(F.collection(db, 'roadmapShares'), F.where('owner', '==', uid))))
+    return snap.docs.map(d => ({ code: d.id, ...d.data() })).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+}
+
+export async function deleteRoadmapShare(code) {
+    const { F, db } = await load()
+    await withTimeout(F.deleteDoc(F.doc(db, 'roadmapShares', code)))
 }

@@ -1,4 +1,4 @@
-import { TYPES, addDays, computeStats, confetti, dayIndex, emptyWeek, getStore, iso, notify, reward, setStore, todayISO, uid, weekStart } from './shared'
+import { TYPES, addDays, computeStats, confetti, dayIndex, emptyWeek, getStore, iso, notify, parseISO, reward, setStore, todayISO, uid, weekStart } from './shared'
 import { play } from './sound'
 
 export function toggleTodo(key, day, id, el) {
@@ -80,6 +80,8 @@ export function removeEvent(ev) {
     const original = getStore('events', []).find(x => x.id === ev.id)
     if (!original) return
     setStore('events', cur => cur.filter(x => x.id !== ev.id), [])
+    // An event that lives in Google Calendar must be deleted there too: the sync reads this list
+    if (original.gid) setStore('gcal', cur => ({ ...cur, deleted: [...new Set([...(cur.deleted || []), original.gid])] }), {})
     setStore('fired', cur => Object.fromEntries(Object.entries(cur).filter(([k]) => !k.startsWith(ev.id + '|'))), {})
     play('delete')
     notify({
@@ -89,9 +91,71 @@ export function removeEvent(ev) {
         actions: [{
             label: 'Undo',
             onClick: () => {
-                setStore('events', cur => (cur.some(x => x.id === original.id) ? cur : [...cur, original]), [])
+                let restored = original
+                if (original.gid) {
+                    const stillQueued = (getStore('gcal', {}).deleted || []).includes(original.gid)
+                    setStore('gcal', cur => ({ ...cur, deleted: (cur.deleted || []).filter(g => g !== original.gid) }), {})
+                    // Already deleted in Google: bring it back as a new event there
+                    if (!stillQueued) {
+                        restored = { ...original }
+                        delete restored.gid
+                        delete restored.gsig
+                    }
+                }
+                setStore('events', cur => (cur.some(x => x.id === restored.id) ? cur : [...cur, restored]), [])
                 play('undo')
             },
         }],
     })
 }
+
+/* ---------- moving todos between days ---------- */
+
+// Moves the todos with these ids from one date to another (any week). The todos keep their id, details and done state.
+// Returns how many moved.
+export function moveTodos(fromISO, ids, toISO) {
+    if (!fromISO || !toISO || fromISO === toISO) return 0
+    const from = parseISO(fromISO)
+    const to = parseISO(toISO)
+    const fk = iso(weekStart(from))
+    const fd = dayIndex(from)
+    const tk = iso(weekStart(to))
+    const td = dayIndex(to)
+    const wanted = new Set(ids)
+    const moving = (((getStore('todos', {})[fk]) || emptyWeek())[fd] || []).filter(t => wanted.has(t.id))
+    if (!moving.length) return 0
+    setStore('todos', cur => {
+        const next = { ...cur }
+        next[fk] = (next[fk] || emptyWeek()).map((list, i) => (i === fd ? list.filter(t => !wanted.has(t.id)) : list))
+        const week = (next[tk] || emptyWeek()).map(list => [...list]) // same week: this already has the removal applied
+        moving.forEach(t => week[td].push(t))
+        next[tk] = week
+        return next
+    }, {})
+    return moving.length
+}
+
+// Finds a todo anywhere in the store: { key (week), day, todo } or null
+export function findTodo(todos, id) {
+    for (const [key, week] of Object.entries(todos || {})) {
+        for (let day = 0; day < week.length; day++) {
+            const todo = week[day].find(t => t.id === id)
+            if (todo) return { key, day, todo }
+        }
+    }
+    return null
+}
+
+// Changes fields of one todo (for example its details), wherever it lives
+export function patchTodo(id, patch) {
+    const hit = findTodo(getStore('todos', {}), id)
+    if (!hit) return
+    setStore('todos', cur => ({
+        ...cur,
+        [hit.key]: cur[hit.key].map((list, i) => (i !== hit.day ? list : list.map(t => (t.id !== id ? t : { ...t, ...patch })))),
+    }), {})
+}
+
+// The details window (TodoDetails.jsx, mounted once in App) listens for this
+export const TODO_EVENT = 'studyhub-todo'
+export const openTodoDetails = id => window.dispatchEvent(new CustomEvent(TODO_EVENT, { detail: id }))

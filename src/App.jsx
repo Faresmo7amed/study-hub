@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-    BADGES, GLOBAL_CSS, checkBackup, dismissToast, downloadBackup, getStore, importAll, notify, setStore,
-    systemNotify, useNow, useStats, useStore, useToasts,
+    BADGES, GLOBAL_CSS, checkBackup, dayIndex, dismissToast, downloadBackup, getStore, importAll, iso, notify, registerWorker, setStore,
+    systemNotify, useNow, useStats, useStore, useToasts, weekStart,
 } from './shared'
 import Dashboard from './Dashboard'
 import Notes from './Notes'
@@ -14,6 +14,11 @@ import StudyGroup, { StudyPublisher } from './StudyGroup'
 import { LeftRail, RAIL_CSS, RightRail } from './Rails'
 import { SETTINGS_EVENT, SettingsModal } from './Settings'
 import { useSyncState } from './sync'
+import AuthGate from './AuthGate'
+import { AdminModal, AdminWatcher } from './AdminPanel'
+import { TodoDetailsHost } from './TodoTools'
+import { startGoogleAutoSync } from './gcal'
+import * as fb from './firebase'
 
 const PAGES = [
     { id: 'dashboard', label: 'Dashboard', icon: '◧' },
@@ -28,7 +33,7 @@ const fromHash = () => {
 }
 
 /* ---------- Top bar ---------- */
-function TopBar({ page, go, onBackup, onAccount, onSound, onSettings, onPanels }) {
+function TopBar({ page, go, onBackup, onAccount, onSound, onSettings, onPanels, onAdmin }) {
     const stats = useStats()
     const [meta] = useStore('meta', {})
     const now = useNow(60000)
@@ -53,9 +58,13 @@ function TopBar({ page, go, onBackup, onAccount, onSound, onSettings, onPanels }
 
     const askPermission = async () => {
         try {
+            await registerWorker()
             const result = await Notification.requestPermission()
             setPerm(result)
-            if (result === 'granted') notify({ title: 'Alerts enabled', body: 'Event reminders will also appear as system notifications.', icon: '✅' })
+            if (result === 'granted') {
+                notify({ title: 'Alerts enabled', body: 'Event reminders will also appear as system notifications.', icon: '✅' })
+                systemNotify('Alerts enabled', 'Event reminders will appear like this.', { tag: 'welcome' })
+            }
         } catch {return null}
     }
 
@@ -89,6 +98,9 @@ function TopBar({ page, go, onBackup, onAccount, onSound, onSettings, onPanels }
                         <i><b style={{ width: stats.level.pct + '%' }} /></i>
                     </span>
                     <AccountButton onClick={onAccount} />
+                    {fb.isAdmin(cloud.user) && cloud.access === 'approved' && (
+                        <button className="icon-btn app-desk" onClick={onAdmin} aria-label="Approve or remove accounts" title="Approve or remove accounts">👑</button>
+                    )}
                     <button className="btn sm app-desk" onClick={onBackup} aria-label="Backup and restore" title={stale ? 'You have not backed up in over a week' : 'Backup and restore'}>
                         <span aria-hidden="true">💾</span><span className="app-lbl"> Backup</span>{stale && <span className="app-dot" role="img" aria-label="Backup recommended" />}
                     </button>
@@ -102,11 +114,24 @@ function TopBar({ page, go, onBackup, onAccount, onSound, onSettings, onPanels }
                     </button>
                 </div>
             </div>
+            {createPortal(
+                <nav className="app-bottom" aria-label="Pages (bottom bar)">
+                    {PAGES.map(p => (
+                        <button key={p.id} className={page === p.id ? 'on' : ''} onClick={() => go(p.id)} aria-current={page === p.id ? 'page' : undefined}>
+                            <span aria-hidden="true">{p.icon}</span>
+                            <em>{p.label}</em>
+                        </button>
+                    ))}
+                </nav>,
+                document.body,
+            )}
             {more && createPortal(
                 <>
                     <div className="app-moreback" onClick={() => setMore(false)} />
                     <div className="app-menu" role="menu">
                         {[
+                            ...PAGES.map(p => [p.icon, p.label + (page === p.id ? ' (open)' : ''), () => go(p.id)]),
+                            ...(fb.isAdmin(cloud.user) ? [['👑', 'Approve or remove accounts', onAdmin]] : []),
                             ...(cloud.phase === 'off' ? [] : [[cloud.user ? '☁️' : '🔑', cloud.user ? 'Account and sync' : 'Sign in to sync', onAccount]]),
                             ['📋', 'Today and overview', onPanels],
                             ['💾', stale ? 'Backup (overdue)' : 'Backup and restore', onBackup],
@@ -178,7 +203,7 @@ function Reminders() {
                 }],
             })
             play(kind === 'pre' ? 'reminder' : 'alarm')
-            systemNotify(title, body)
+            systemNotify(title, body, { tag: `${ev.id}|${ev.date}|${ev.time}|${kind}`, sticky: kind === 'at' })
         }
 
         events.forEach(ev => {
@@ -198,6 +223,25 @@ function Reminders() {
                 fire(ev, 'at')
             }
         })
+
+        // Optional daily nudge: a notification at the chosen time if todos are still open
+        const at = (getStore('settings', {}).dailyRemind || '').split(':').map(Number)
+        if (at.length === 2 && !at.some(Number.isNaN)) {
+            const dayKey = `daily|${iso(now)}`
+            const when = new Date(now)
+            when.setHours(at[0], at[1], 0, 0)
+            if (!fired[dayKey] && t >= when.getTime() && t < when.getTime() + 3600000) {
+                const week = getStore('todos', {})[iso(weekStart(now))]
+                const open = ((week && week[dayIndex(now)]) || []).filter(x => !x.done).length
+                if (open > 0) {
+                    patch[dayKey] = true // only counts as sent when there was something to say
+                    const text = `${open} todo${open > 1 ? 's' : ''} still open today.`
+                    notify({ title: 'Todo reminder', body: text, icon: '📝', sticky: true })
+                    systemNotify('Todo reminder', text, { tag: dayKey })
+                    play('reminder')
+                }
+            }
+        }
 
         const due = snoozed.current.filter(s => s.at <= t)
         if (due.length) {
@@ -335,10 +379,37 @@ export default function App() {
     const [soundOpen, setSoundOpen] = useState(false)
     const [settingsOpen, setSettingsOpen] = useState(false)
     const [panels, setPanels] = useState(false)
+    const [adminOpen, setAdminOpen] = useState(false)
     const [ui] = useStore('ui', { left: true, right: true })
     // Ask the browser not to evict our data when disk space runs low
     useEffect(() => {
         if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {})
+    }, [])
+
+    // Phone-friendly setup done here, because index.html is not part of the source files:
+    // a viewport that fills the screen, the app manifest, the notification service worker, Google Calendar auto sync
+    useEffect(() => {
+        let vp = document.querySelector('meta[name="viewport"]')
+        if (!vp) {
+            vp = document.createElement('meta')
+            vp.name = 'viewport'
+            document.head.appendChild(vp)
+        }
+        if (!/viewport-fit/.test(vp.content)) vp.content = 'width=device-width, initial-scale=1, viewport-fit=cover'
+        if (!document.querySelector('link[rel="manifest"]')) {
+            const link = document.createElement('link')
+            link.rel = 'manifest'
+            link.href = '/manifest.webmanifest'
+            document.head.appendChild(link)
+        }
+        if (!document.querySelector('meta[name="theme-color"]')) {
+            const tc = document.createElement('meta')
+            tc.name = 'theme-color'
+            tc.content = '#5b4bdb'
+            document.head.appendChild(tc)
+        }
+        registerWorker()
+        startGoogleAutoSync()
     }, [])
 
     useEffect(() => {
@@ -365,27 +436,32 @@ export default function App() {
             <style>{GLOBAL_CSS}</style>
             <style>{CSS}</style>
             <style>{RAIL_CSS}</style>
-            <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} onSound={() => setSoundOpen(true)} onSettings={() => setSettingsOpen(true)} onPanels={() => setPanels(true)} />
-            <div className="app-shell">
-                {ui.left && page !== 'notes' && <LeftRail />}
-                <main>
-                    {page === 'notes' && <Notes />}
-                    {page === 'roadmap' && <Roadmap />}
-                    {page === 'studygroup' && <StudyGroup />}
-                    {page === 'dashboard' && <Dashboard />}
-                </main>
-                {ui.right && <RightRail />}
-            </div>
-            {backup && <BackupModal onClose={() => setBackup(false)} />}
-            {account && <AccountModal onClose={() => setAccount(false)} />}
-            {soundOpen && <SoundModal onClose={() => setSoundOpen(false)} />}
-            {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
-            {panels && <PanelsModal onClose={() => setPanels(false)} />}
             <CloudSync />
-            <StudyPublisher />
+            <AuthGate>
+                <TopBar page={page} go={go} onBackup={() => setBackup(true)} onAccount={() => setAccount(true)} onSound={() => setSoundOpen(true)} onSettings={() => setSettingsOpen(true)} onPanels={() => setPanels(true)} onAdmin={() => setAdminOpen(true)} />
+                <div className="app-shell">
+                    {ui.left && page !== 'notes' && <LeftRail />}
+                    <main>
+                        {page === 'notes' && <Notes />}
+                        {page === 'roadmap' && <Roadmap />}
+                        {page === 'studygroup' && <StudyGroup />}
+                        {page === 'dashboard' && <Dashboard />}
+                    </main>
+                    {ui.right && <RightRail />}
+                </div>
+                {backup && <BackupModal onClose={() => setBackup(false)} />}
+                {account && <AccountModal onClose={() => setAccount(false)} onAdmin={() => setAdminOpen(true)} />}
+                {soundOpen && <SoundModal onClose={() => setSoundOpen(false)} />}
+                {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+                {panels && <PanelsModal onClose={() => setPanels(false)} />}
+                {adminOpen && <AdminModal onClose={() => setAdminOpen(false)} />}
+                <AdminWatcher onOpen={() => setAdminOpen(true)} />
+                <TodoDetailsHost />
+                <StudyPublisher />
+                <Reminders />
+                <GameWatcher />
+            </AuthGate>
             <Toasts />
-            <Reminders />
-            <GameWatcher />
         </div>
     )
 }
@@ -408,6 +484,7 @@ const CSS = `
 .app-cloud.signedout{background:linear-gradient(135deg,var(--ac),var(--ac2));color:#fff;border-color:transparent}
 .app-cloud.synced{color:var(--ok)}.app-cloud.offline,.app-cloud.error{color:var(--wip)}.app-cloud.choose{color:var(--bad);border-color:var(--bad)}
 .app-railbtn,.app-more{display:none}
+.app-bottom{display:none}
 .app-more{position:relative;font-size:20px;padding:2px 9px}
 .app-moreback{position:fixed;inset:0;z-index:65}
 .app-menu{position:fixed;z-index:70;top:54px;right:10px;width:min(280px,calc(100vw - 20px));background:var(--sf);border:1px solid var(--ln);border-radius:14px;box-shadow:0 16px 48px rgba(0,0,0,.35);padding:6px;display:grid;animation:rise .15s}
@@ -438,14 +515,31 @@ const CSS = `
 .app-lbl{display:none}
 .app-cloud.signedout .app-lbl{display:inline}
 .app-chip{padding:3px 8px}
-.app-nav{position:fixed;left:0;right:0;bottom:0;z-index:45;border-radius:0;border-width:1px 0 0;background:var(--sf);padding:4px 6px calc(4px + env(safe-area-inset-bottom));gap:2px;order:0;box-shadow:0 -6px 20px rgba(0,0,0,.12)}
-.app-nav button{flex:1;display:grid;justify-items:center;gap:1px;padding:6px 2px;font-size:11px;white-space:nowrap}
-.app-nav button>span{font-size:18px;line-height:1.2}
-.app-nav button.on{background:color-mix(in srgb,var(--ac) 14%,transparent);color:var(--ac);box-shadow:none}
+/* The page switcher on phones is a separate bar rendered straight into <body> (see TopBar), so no parent can hide or move it */
+.app-nav{display:none}
+.app-bottom{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:45;background:var(--sf);border-top:1px solid var(--ln);padding:4px 6px calc(4px + env(safe-area-inset-bottom,0px));gap:2px;box-shadow:0 -6px 20px rgba(0,0,0,.12)}
+.app-bottom button{flex:1;min-width:0;display:grid;justify-items:center;gap:1px;border:0;background:none;color:var(--mu);padding:7px 2px 6px;border-radius:10px;cursor:pointer;font-size:11px;position:relative}
+.app-bottom button>span{font-size:19px;line-height:1.2}
+.app-bottom button>em{font-style:normal;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.app-bottom button.on{background:color-mix(in srgb,var(--ac) 14%,transparent);color:var(--ac)}
+.app-bottom button.on::before{content:'';position:absolute;top:-5px;left:30%;right:30%;height:3px;border-radius:0 0 3px 3px;background:var(--ac)}
 .app-shell>main{padding-bottom:68px}
 .toasts{bottom:76px}
 .app-menu{top:50px}
 }
 @media(max-width:640px){.modal-back{align-items:end;padding:0}.modal{width:100%;max-height:92vh;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}.modal input,.modal select,.modal textarea{font-size:16px}.modal .row .btn{flex:1 1 auto}}
 @media(max-width:420px){.app-brand{font-size:0}.app-chip.lvl i{display:none}}
+
+/* ---------- interface polish ---------- */
+html{-webkit-tap-highlight-color:transparent;scrollbar-width:thin}
+.card:hover{border-color:color-mix(in srgb,var(--ac) 28%,var(--ln))}
+:where(input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea):focus{border-color:var(--ac);box-shadow:0 0 0 3px color-mix(in srgb,var(--ac) 20%,transparent);outline:none}
+.btn:disabled{opacity:.5;cursor:not-allowed}.btn:disabled:hover{border-color:var(--ln)}
+.btn.primary{box-shadow:0 2px 10px color-mix(in srgb,var(--ac) 30%,transparent)}
+.modal-back{backdrop-filter:blur(3px)}
+.modal{scrollbar-width:thin}
+.app-top-in{min-height:54px}
+.app-nav button.on{box-shadow:0 1px 4px rgba(0,0,0,.14),inset 0 -2px 0 var(--ac)}
+.toast{backdrop-filter:blur(8px)}
+@media(pointer:coarse){.btn{min-height:40px}.btn.sm{min-height:34px}:where(input[type=checkbox]){width:20px;height:20px}.app-menu button{padding:14px 12px}}
 `

@@ -3,12 +3,86 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ------------------------------------------------------------------
+    // Access control: only accounts the owner approved can use anything.
+    // 1) Put YOUR Firebase user id below (Authentication > Users > User UID), then publish the rules.
+    // 2) Use the same id as VITE_ADMIN_UID in your .env file.
+    // ------------------------------------------------------------------
+    function isOwner() {
+      return request.auth != null && request.auth.uid == 'PASTE_YOUR_ADMIN_UID_HERE';
+    }
+    function approvedUser(uid) {
+      return exists(/databases/$(database)/documents/approved/$(uid));
+    }
+    // Accounts that existed before approvals were introduced already have data. They approve themselves once,
+    // the first time they open the app. Once everybody has opened the app you can delete this function body
+    // and return false, so that only the owner can approve new accounts.
+    function legacyUser(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)/data/todos)
+        || exists(/databases/$(database)/documents/users/$(uid)/data/settings)
+        || exists(/databases/$(database)/documents/users/$(uid)/data/roadmaps)
+        || exists(/databases/$(database)/documents/users/$(uid)/data/events)
+        || exists(/databases/$(database)/documents/users/$(uid)/data/notes);
+    }
+    // Signed in AND approved
+    function member() {
+      return request.auth != null && (isOwner() || approvedUser(request.auth.uid));
+    }
+
+    match /approved/{uid} {
+      allow get: if request.auth != null && (request.auth.uid == uid || isOwner());
+      allow list: if isOwner();
+      allow create: if request.auth != null
+        && (isOwner() || (request.auth.uid == uid && legacyUser(uid)))
+        && request.resource.data.keys().hasOnly(['email', 'at', 'by'])
+        && request.resource.data.email is string
+        && request.resource.data.at is number
+        && request.resource.data.by is string;
+      allow update: if isOwner();
+      allow delete: if request.auth != null && (request.auth.uid == uid || isOwner());
+    }
+
+    // Sign-up requests. A user can only ask (status pending). Only the owner can read the list, deny or remove them.
+    match /requests/{uid} {
+      allow get: if request.auth != null && (request.auth.uid == uid || isOwner());
+      allow list: if isOwner();
+      allow create: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['email', 'name', 'at', 'status'])
+        && request.resource.data.status == 'pending'
+        && request.resource.data.email is string
+        && request.resource.data.name is string
+        && request.resource.data.at is number;
+      allow create, update: if isOwner();
+      // A declined user cannot wipe the decline and ask again
+      allow delete: if request.auth != null && ((request.auth.uid == uid && resource.data.status != 'denied') || isOwner());
+    }
+
+    // Roadmap copies: the code is the document id. Approved users who know it can read it. Nobody can list all codes.
+    match /roadmapShares/{code} {
+      allow get: if member();
+      allow list: if member() && resource.data.owner == request.auth.uid;
+      allow create, update: if member()
+        && request.resource.data.keys().hasOnly(['owner', 'title', 'data', 'createdAt', 'updatedAt'])
+        && request.resource.data.owner == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.title.size() <= 80
+        && request.resource.data.data is string
+        && request.resource.data.data.size() < 900000
+        && request.resource.data.createdAt is number
+        && request.resource.data.updatedAt is number;
+      allow delete: if request.auth != null && resource.data.owner == request.auth.uid;
+    }
+
     // Private data: each user can only touch their own documents, and only the known keys
     match /users/{uid}/data/{key} {
-      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null && request.auth.uid == uid
+        && (isOwner() || approvedUser(uid) || legacyUser(uid));
+      // The owner can erase the data of an account they remove (not read it)
+      allow delete: if request.auth != null && (request.auth.uid == uid || isOwner());
 
       allow create, update: if request.auth != null
         && request.auth.uid == uid
+        && (isOwner() || approvedUser(uid) || legacyUser(uid))
         && key in ['todos', 'activity', 'focus', 'events', 'game', 'settings', 'database', 'notes', 'labels', 'roadmap', 'roadmaps', 'studygroup', 'titles', 'recurring']
         && request.resource.data.keys().hasOnly(['value', 'updatedAt', 'serverAt'])
         && request.resource.data.value is string
@@ -33,8 +107,8 @@ service cloud.firestore {
           && p.get('focus', '').size() <= 60;
       }
 
-      allow get: if request.auth != null;
-      allow create: if request.auth != null
+      allow get: if member();
+      allow create: if member()
         && request.resource.data.keys().hasOnly(['name', 'owner', 'createdAt'])
         && request.resource.data.owner == request.auth.uid
         && request.resource.data.name is string
@@ -42,7 +116,7 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 40
         && request.resource.data.createdAt is number;
       // Only the owner can change the weekly goal and the group focus block, and nothing else
-      allow update: if request.auth != null
+      allow update: if member()
         && resource.data.owner == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['goal', 'block'])
         && request.resource.data.get('goal', 0) is number
@@ -55,9 +129,9 @@ service cloud.firestore {
         && request.resource.data.get('block', {}).get('min', 25) <= 180;
 
       match /members/{uid} {
-        allow read: if request.auth != null
+        allow read: if member()
           && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
-        allow create, update: if request.auth != null
+        allow create, update: if member()
           && request.auth.uid == uid
           && exists(/databases/$(database)/documents/groups/$(code))
           && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'paused', 'tier', 'todos', 'profile', 'updatedAt'])
@@ -76,9 +150,9 @@ service cloud.firestore {
       }
 
       match /shares/{shareId} {
-        allow read: if request.auth != null
+        allow read: if member()
           && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
-        allow create, update: if request.auth != null
+        allow create, update: if member()
           && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid))
           && shareId.matches(request.auth.uid + '_.*')
           && request.resource.data.keys().hasOnly(['owner', 'kind', 'title', 'data', 'updatedAt'])
@@ -94,9 +168,9 @@ service cloud.firestore {
 
       // A study session planned for the whole group. The author or the group owner can remove it.
       match /events/{eventId} {
-        allow read: if request.auth != null
+        allow read: if member()
           && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
-        allow create, update: if request.auth != null
+        allow create, update: if member()
           && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid))
           && eventId.matches(request.auth.uid + '_.*')
           && request.resource.data.keys().hasOnly(['owner', 'title', 'date', 'time', 'at'])
@@ -116,9 +190,9 @@ service cloud.firestore {
 
       // One document per (sender, receiver) pair. A new cheer overwrites the old one and raises the counter.
       match /cheers/{cheerId} {
-        allow read: if request.auth != null
+        allow read: if member()
           && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid));
-        allow create, update: if request.auth != null
+        allow create, update: if member()
           && exists(/databases/$(database)/documents/groups/$(code)/members/$(request.auth.uid))
           && request.resource.data.keys().hasOnly(['from', 'to', 'kind', 'n', 'at'])
           && request.resource.data.from == request.auth.uid

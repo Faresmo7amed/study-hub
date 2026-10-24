@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { downloadBackup, notify } from './shared'
+import { SYNC_KEYS, STUDY_DEFAULT, clearLocalData, downloadBackup, getStore, notify } from './shared'
 import * as fb from './firebase'
+import { friendly } from './authErrors'
 import { resolveChoice, signOutAndWipe, startSync, syncNow, useSyncState } from './sync'
 
 const LABELS = { todos: 'Todos', activity: 'Streak history', focus: 'Focus sessions', events: 'Events', game: 'Badges', settings: 'Settings', database: 'Courses database', notes: 'Notes', labels: 'Note labels', roadmap: 'Roadmap (old)', roadmaps: 'Roadmaps', studygroup: 'Study Group' }
@@ -13,25 +14,7 @@ const PHASE = {
     offline: ['📴', 'Offline'],
     error: ['⚠️', 'Sync error'],
     choose: ['❗', 'Action needed'],
-}
-
-const friendly = err => {
-    const code = (err && err.code) || ''
-    const map = {
-        'auth/invalid-credential': 'Wrong email or password.',
-        'auth/wrong-password': 'Wrong email or password.',
-        'auth/user-not-found': 'Wrong email or password.',
-        'auth/invalid-email': 'That email address does not look right.',
-        'auth/email-already-in-use': 'An account with this email already exists. Try signing in.',
-        'auth/weak-password': 'Use a password with at least 6 characters.',
-        'auth/too-many-requests': 'Too many attempts. Wait a few minutes and try again.',
-        'auth/network-request-failed': 'No connection. Check your internet and try again.',
-        'auth/popup-closed-by-user': 'The Google window was closed before signing in.',
-        'auth/popup-blocked': 'Your browser blocked the Google window. Allow pop-ups or use email and password.',
-        'auth/operation-not-allowed': 'This sign-in method is turned off, or new sign-ups are disabled.',
-        'auth/unauthorized-domain': 'This web address is not allowed yet. Add it under Authentication, Settings, Authorized domains.',
-    }
-    return map[code] || (err && err.message) || 'Something went wrong.'
+    pending: ['⏳', 'Waiting for approval'],
 }
 
 /* ---------- small button in the top bar ---------- */
@@ -46,8 +29,49 @@ export function AccountButton({ onClick }) {
     )
 }
 
+/* ---------- delete my own account ---------- */
+function DeleteAccount({ user }) {
+    const [open, setOpen] = useState(false)
+    const [password, setPassword] = useState('')
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState('')
+    const owner = fb.isAdmin(user)
+
+    const go = async e => {
+        e.preventDefault()
+        setBusy(true)
+        setError('')
+        try {
+            const groups = ((getStore('studygroup', STUDY_DEFAULT) || {}).groups || []).map(g => g.id)
+            await fb.deleteMyAccount({ keys: SYNC_KEYS, groups, password })
+            clearLocalData()
+            window.location.reload()
+        } catch (err) {
+            setError(friendly(err))
+            setBusy(false)
+        }
+    }
+
+    if (owner) return <p className="muted small">This is the owner account, so it cannot be deleted from here.</p>
+    if (!open) return <button className="btn danger" onClick={() => setOpen(true)}>Delete my account…</button>
+    return (
+        <form onSubmit={go} className="card" style={{ padding: 14, boxShadow: 'none', display: 'grid', gap: 8 }}>
+            <b>Delete this account for good?</b>
+            <p className="muted small" style={{ margin: 0 }}>This erases your cloud data, removes you from your study groups and deletes your login. The data on this device is erased too. Download a backup first if you want to keep anything.</p>
+            <label className="field" style={{ marginBottom: 0 }}><span>Your password (leave empty if you sign in with Google)</span>
+                <input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} />
+            </label>
+            {error && <p style={{ color: 'var(--bad)', margin: 0 }} role="alert">{error}</p>}
+            <div className="row">
+                <button className="btn danger" type="submit" disabled={busy}>{busy ? 'Deleting…' : 'Yes, delete everything'}</button>
+                <button className="btn" type="button" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+            </div>
+        </form>
+    )
+}
+
 /* ---------- sign in / account ---------- */
-export function AccountModal({ onClose }) {
+export function AccountModal({ onClose, onAdmin }) {
     const s = useSyncState()
     const [mode, setMode] = useState('signin')
     const [email, setEmail] = useState('')
@@ -113,16 +137,22 @@ export function AccountModal({ onClose }) {
                             <button className="btn primary" onClick={() => syncNow().then(() => notify({ title: 'Sync finished', icon: '☁️' }))}>Sync now</button>
                             <button className="btn" onClick={() => fb.logOut().then(onClose)}>Sign out</button>
                         </div>
+                        {fb.isAdmin(s.user) && (
+                            <div className="row" style={{ margin: '0 0 12px' }}>
+                                <button className="btn" onClick={() => { onClose(); onAdmin && onAdmin() }}>👑 Approve or remove accounts</button>
+                            </div>
+                        )}
                         <div className="field"><span>Shared or public computer?</span>
                             <button className="btn danger" style={{ whiteSpace: 'normal', textAlign: 'left' }} onClick={() => { if (armed) signOutAndWipe(); else setArmed(true) }}>
                                 {armed ? 'Click again to sign out and erase local data' : 'Sign out and remove my data from this device'}
                             </button>
                         </div>
+                        <div className="field"><span>Delete account</span><DeleteAccount user={s.user} /></div>
                     </>
                 ) : (
                     <form onSubmit={submit}>
                         <p className="muted small" style={{ marginTop: -6 }}>
-                            Optional. Sign in to keep your data safe in the cloud and use it on your phone and computer. Without an account everything stays on this device.
+                            Sign in to keep your data safe in the cloud and use it on your phone and computer. New accounts must be approved by the owner first. Without an account everything stays on this device.
                         </p>
                         <label className="field"><span>Email</span>
                             <input type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} />

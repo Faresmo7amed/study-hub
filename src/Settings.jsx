@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { clamp, isHttp, normalizeUrl, notify, useStore } from './shared'
 import { play } from './sound'
+import { GoogleCalendarSection, NotificationsSection } from './IntegrationsSettings'
 
 // [key, label, icon, placeholder]
 export const LINK_KINDS = [
@@ -52,6 +53,7 @@ export function SettingsModal({ onClose }) {
     const [goal, setGoal] = useState(settings.dailyGoal || 3)
     const [heat, setHeat] = useState(settings.heatmap !== false)
     const [hide, setHide] = useState(() => ({ ...(settings.hide || {}) }))
+    const [remindAt, setRemindAt] = useState(settings.dailyRemind || '')
 
     const save = e => {
         e.preventDefault()
@@ -61,6 +63,7 @@ export function SettingsModal({ onClose }) {
             d.dailyGoal = clamp(Number(goal) || 3, 1, 20)
             d.heatmap = heat
             d.hide = hide
+            d.dailyRemind = /^\d{2}:\d{2}$/.test(remindAt) ? remindAt : ''
         })
         play('save')
         notify({ title: 'Settings saved', icon: '⚙️' })
@@ -87,6 +90,9 @@ export function SettingsModal({ onClose }) {
                 <label className="row" style={{ marginBottom: 12 }}>
                     <input type="checkbox" checked={heat} onChange={e => setHeat(e.target.checked)} /> Show the study activity graph
                 </label>
+
+                <NotificationsSection time={remindAt} onTime={setRemindAt} />
+                <GoogleCalendarSection />
 
                 <h3 className="st-h">Sidebar cards</h3>
                 <p className="muted small" style={{ marginTop: 0 }}>Untick a card to hide it.</p>

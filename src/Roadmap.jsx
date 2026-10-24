@@ -1,8 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { addDays, addTodoToday, confetti, getStore, isHttp, isStored, notify, openNote, setStore, startOfDay, todayISO, uid, useStore } from './shared'
 import { play } from './sound'
 import { Icon, IconPicker } from './Icons'
+import BlockEditor, { blocksText, blocksToMarkdown, cleanBlocks, mdToBlocks } from './BlockEditor'
+import RoadmapShare from './RoadmapShare'
 import { cleanIcon } from './iconUtils'
 
 /* ============================================================
@@ -36,6 +38,8 @@ const norm = (t, top = true) => {
     o.icon = cleanIcon(t.icon)
     o.due = /^\d{4}-\d{2}-\d{2}$/.test(t.due || '') ? t.due : '' // optional deadline
     o.doneAt = Number(t.doneAt) || 0 // when it was marked done: feeds the pace forecast
+    // "Study content": blocks (headings, lists, toggles, todos, code). null = never edited, then the old notes text is shown.
+    o.content = Array.isArray(t.content) ? cleanBlocks(t.content) : null
     return o
 }
 
@@ -207,14 +211,6 @@ export function snapshotRoadmap(store, id) {
     return { v: 2, roadmap: { id: m.id, title: m.title, colors, topics: m.topics.map(t => item(t, true)) } }
 }
 /* eslint-enable react-refresh/only-export-components */
-const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-const md = s => esc(s || '')
-    .split('\n')
-    .map(l => (/^#{1,3} /.test(l) ? '<h4>' + l.replace(/^#+ /, '') + '</h4>' : /^[-*] /.test(l) ? '<li>' + l.slice(2) + '</li>' : l.trim() ? '<p>' + l + '</p>' : ''))
-    .join('')
-    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-    .replace(/`(.+?)`/g, '<code>$1</code>')
-
 const NS = 'http://www.w3.org/2000/svg'
 const svgEl = (tag, attrs) => {
     const n = document.createElementNS(NS, tag)
@@ -329,7 +325,8 @@ const toMarkdown = (data, maps) => {
         if (t.proj.length) out.push('', '**Projects**', ...t.proj.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}${x.desc ? ' · ' + x.desc : ''}`))
         if (t.res.length) out.push('', '**Resources**', ...t.res.map(x => `- ${x.type}: ${x.url ? `[${x.t || x.url}](${x.url})` : x.t}`))
         if (t.gate) out.push('', `**Gate:** ${t.gate.name}${t.gate.done ? ' (passed)' : ''}${t.gate.desc ? ' · ' + t.gate.desc : ''}`)
-        if (t.notes) out.push('', t.notes)
+        if (t.content && t.content.length) out.push('', blocksToMarkdown(t.content))
+        else if (t.notes) out.push('', t.notes)
         out.push('')
     })
     return out.join('\n')
@@ -402,19 +399,24 @@ function LinkedNotes({ topicId }) {
 
 function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap }) {
     const hit = sel && locate(data, sel)
-    const [reading, setReading] = useState(true)
     const [armed, setArmed] = useState(false)
     const lastSel = useRef(null)
     const nf = useRef(null)
 
-    // Choose read mode when a different item opens
+    // Forget the "click again" warning when a different item opens
     useEffect(() => {
         if (sel !== lastSel.current) {
             lastSel.current = sel
-            setReading(!!(hit && hit.t.notes))
             setArmed(false)
         }
-    }, [sel]) // eslint-disable-line react-hooks/exhaustive-deps
+    }, [sel])
+
+    // Study content. Items that only have old notes text show that text as blocks; the first edit saves it as blocks.
+    const topic = hit ? hit.t : null
+    const content = useMemo(() => {
+        if (!topic) return []
+        return topic.content ? cleanBlocks(topic.content) : mdToBlocks(topic.notes)
+    }, [topic && topic.id, topic && topic.content, topic && topic.notes]) // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         if (!nf.current) return
@@ -509,13 +511,9 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
             {seg('Priority', PR, 'priority')}
 
             <section>
-                <div className="row">
-                    <h3 className="grow">Study notes</h3>
-                    <button className="btn sm" onClick={() => setReading(!reading)}>{reading ? 'Edit' : 'Read'}</button>
-                </div>
-                {reading
-                    ? <div className="rm-md" dangerouslySetInnerHTML={{ __html: md(t.notes) || '<p>No notes yet. Choose Edit to write what you need to study. Markdown headings, lists, bold and code work.</p>' }} />
-                    : <textarea rows={7} value={t.notes || ''} placeholder={'# Heading\n- point\n**bold** and `code`'} aria-label="Study notes" onChange={e => api.patch(t.id, { notes: e.target.value })} />}
+                <h3>Study content</h3>
+                <p className="muted small" style={{ margin: '2px 0 8px' }}>Type like a notebook: headings, bulleted and numbered points, toggles, to-dos, code and dividers. Tab nests a line, Enter makes the next one.</p>
+                <BlockEditor key={t.id} label="Study content" value={content} onChange={blocks => api.patch(t.id, { content: blocks })} />
             </section>
 
             <section>
@@ -747,6 +745,7 @@ export default function Roadmap() {
     const restoring = useRef(false)
     const [hideSubs, setHideSubs] = useState(false)
     const [backup, setBackup] = useState(false)
+    const [sharing, setSharing] = useState(false)
     const [creating, setCreating] = useState(false)
     const [colorsOpen, setColorsOpen] = useState(false)
     const [menu, setMenu] = useState(null) // null when closed, otherwise where the menu opens
@@ -758,6 +757,32 @@ export default function Roadmap() {
     const maps = store.maps
     const activeId = maps[store.active] ? store.active : store.order[0]
     const data = maps[activeId] || { id: '', title: '', topics: [] }
+
+    // Copies for other accounts (see RoadmapShare.jsx). Links to other roadmaps are cut, because those roadmaps do not exist for the receiver.
+    const cutLinks = m => {
+        m.topics.forEach(t => { t.ref = null; t.mirror = null; t.subs.forEach(x => { x.ref = null; x.mirror = null }) })
+        return m
+    }
+    const exportForShare = () => cutLinks(JSON.parse(JSON.stringify(data)))
+    const importShared = (raw, keepProgress) => {
+        if (!raw || !Array.isArray(raw.topics)) throw new Error('This share does not contain a roadmap.')
+        const copy = cutLinks(JSON.parse(JSON.stringify(normMap({ ...raw, id: uid() }))))
+        reid(copy) // new ids everywhere, so the copy never touches the original
+        if (!keepProgress) {
+            copy.topics.forEach(t => {
+                ;[t, ...t.subs].forEach(x => {
+                    x.status = 'todo'
+                    x.doneAt = 0
+                    x.steps.forEach(st => { st.done = false })
+                    x.proj.forEach(pr => { pr.done = false })
+                })
+                if (t.gate) t.gate.done = false
+            })
+        }
+        const m = normMap(copy)
+        setRoadmaps({ order: [...store.order, m.id], active: m.id, maps: { ...store.maps, [m.id]: m } })
+        return m.title
+    }
     const colors = { ...DEFAULT_COLORS, ...(settings.roadmapColors || {}) }
     const st = t => effStatus(t, maps)
 
@@ -1073,7 +1098,7 @@ export default function Roadmap() {
 
     /* ----- derived ----- */
     const q = query.trim().toLowerCase()
-    const matches = t => !q || JSON.stringify([t.title, t.desc, t.notes, t.steps.map(s => s.t)]).toLowerCase().includes(q)
+    const matches = t => !q || JSON.stringify([t.title, t.desc, t.notes, blocksText(t.content), t.steps.map(s => s.t)]).toLowerCase().includes(q)
     const vis = t => (!pf || t.priority === pf) && (!sf || st(t) === sf) && matches(t)
     const all = itemsOf(data)
     const doneCount = all.filter(t => st(t) === 'done').length
@@ -1173,6 +1198,7 @@ export default function Roadmap() {
                     <button className="btn" onClick={() => setHideSubs(!hideSubs)}>{hideSubs ? 'Show subtopics' : 'Hide subtopics'}</button>
                     <button className="btn primary" onClick={addTopic}>Add topic</button>
                     <button className="btn" onClick={() => setBackup(true)}>Backup</button>
+                    <button className="btn" onClick={() => setSharing(true)} title="Give a copy of this roadmap to another account">Share</button>
                 </div>
                 <div className="rm-legend">
                     <span className="muted small">Priority (click to highlight):</span>
@@ -1222,6 +1248,7 @@ export default function Roadmap() {
             {sel && <div className="rm-scrim" onClick={() => setSel(null)} />}
             <Drawer data={data} maps={maps} order={store.order} currentId={activeId} sel={sel} setSel={setSel} api={api} onOpenRoadmap={id => goRoadmap(id, true)} />
             {backup && <BackupModal store={store} activeId={activeId} setRoadmaps={setRoadmaps} onClose={() => setBackup(false)} />}
+            {sharing && <RoadmapShare title={data.title} exportMap={exportForShare} importMap={importShared} onClose={() => setSharing(false)} />}
             {creating && <NewRoadmapModal currentTitle={data.title} onCreate={createRoadmap} onClose={() => setCreating(false)} />}
             {colorsOpen && (
                 <ColorsModal colors={colors} onClose={() => setColorsOpen(false)}

@@ -3,7 +3,7 @@ import {
     DAYS, STUDY_DEFAULT, TYPES, TYPE_KEYS, addDays, addTodoToday, dayIndex, hms, isHttp, iso, normalizeUrl, parseISO, quoteOfDay,
     todayISO, uid, until, useNow, useStats, useStore, weekStart,
 } from './shared'
-import { EVENT_COLORS, removeEvent, toggleTodo } from './todoActions'
+import { EVENT_COLORS, openTodoDetails, removeEvent, toggleTodo } from './todoActions'
 import { loadRoadmaps, nextUp, openRoadmap, roadmapList } from './Roadmap'
 import { MAX_SESSION, STREAK_MIN, fmtMin, pauseSession, resumeSession, runActive, runElapsed, runRunning, startSession, stopSession, streakOf } from './StudyGroup'
 import { SocialLinks, openSettings } from './Settings'
@@ -95,6 +95,7 @@ export function LeftRail({ sheet = false }) {
                             <span>{(TYPES[t.type] || TYPES.task).icon} {isHttp(t.link || '')
                                 ? <a className="rail-link" href={t.link} target="_blank" rel="noopener noreferrer" title={t.link}>{t.text}</a>
                                 : t.text}</span>
+                            <button className="icon-btn rail-open" onClick={() => openTodoDetails(t.id)} aria-label={`Open details of ${t.text}`} title="Open details">⤢</button>
                         </li>
                     ))}
                 </ul>
@@ -202,11 +203,22 @@ function MiniCalendar() {
                 <ul className="rail-up">
                     {dayEvents.map(e => (
                         <li key={e.id} className="mc-ev" style={{ '--c': e.color }}>
-                            <span className="small grow"><b>{e.time || 'All day'}</b> {e.title}</span>
+                            <span className="small grow"><b>{e.time || 'All day'}</b> {e.title}{e.gid && <span className="cal-g" title="Synced with Google Calendar">G</span>}</span>
                             <button className="icon-btn" onClick={() => removeEvent(e)} aria-label={`Delete ${e.title}`} title="Delete event">×</button>
                         </li>
                     ))}
                 </ul>
+                {dayTodos.length > 0 && (
+                    <ul className="rail-todos mc-todos" aria-label="Todos of this day">
+                        {dayTodos.map(t => (
+                            <li key={t.id} className={t.done ? 'done' : ''}>
+                                <input type="checkbox" checked={t.done} onChange={e => toggleTodo(iso(weekStart(selDate)), dayIndex(selDate), t.id, e.currentTarget)} aria-label={`Mark "${t.text}" as done`} />
+                                <span>{(TYPES[t.type] || TYPES.task).icon} {t.text}</span>
+                                <button className="icon-btn rail-open" onClick={() => openTodoDetails(t.id)} aria-label={`Open details of ${t.text}`} title="Open details">⤢</button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
                 <form className="mc-add" onSubmit={add}>
                     <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Event" aria-label="Event title" maxLength={80} />
                     <input type="time" value={time} onChange={e => setTime(e.target.value)} aria-label="Event time (empty for all day)" />
@@ -320,6 +332,10 @@ export const RAIL_CSS = `
 .rail-link{color:var(--ac);text-decoration:underline;text-underline-offset:2px}
 .rail-todos li.done .rail-link{color:var(--mu);text-decoration:line-through}
 .rail-todos input{margin-top:3px;flex:none}
+.rail-todos li>span{flex:1;min-width:0}
+.rail-open{flex:none;padding:0 5px;font-size:13px;opacity:.5}.rail-todos li:hover .rail-open,.rail-open:focus-visible{opacity:1}
+@media(hover:none){.rail-open{opacity:.8}}
+.mc-todos{padding-top:2px}
 .rail-add{display:grid;gap:6px}
 .rail textarea{min-height:90px}
 .rail-up li{display:grid;gap:4px}
