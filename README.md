@@ -26,23 +26,36 @@ studyhub
 ├─ pnpm-lock.yaml
 ├─ pnpm-workspace.yaml
 ├─ public
-│  └─ favicon.svg
+│  ├─ favicon.svg
+│  ├─ icon-192.png
+│  ├─ icon-512.png
+│  ├─ icon-maskable-512.png
+│  ├─ manifest.webmanifest
+│  └─ sw.js
 ├─ README.md
 ├─ src
 │  ├─ Account.jsx
+│  ├─ AdminPanel.jsx
 │  ├─ App.jsx
 │  ├─ assets
+│  ├─ authErrors.js
+│  ├─ AuthGate.jsx
+│  ├─ BlockEditor.jsx
 │  ├─ Dashboard.jsx
 │  ├─ Database.jsx
 │  ├─ firebase.js
+│  ├─ gcal.js
 │  ├─ Heatmap.jsx
 │  ├─ Icons.jsx
 │  ├─ iconUtils.js
+│  ├─ IntegrationsSettings.jsx
 │  ├─ main.jsx
 │  ├─ Notes.jsx
+│  ├─ PrivacyPolicy.jsx
 │  ├─ Rails.jsx
 │  ├─ Rewards.jsx
 │  ├─ Roadmap.jsx
+│  ├─ RoadmapShare.jsx
 │  ├─ ROADMAP_FEATURES.md
 │  ├─ Settings.jsx
 │  ├─ shared.js
@@ -50,7 +63,8 @@ studyhub
 │  ├─ SoundSettings.jsx
 │  ├─ StudyGroup.jsx
 │  ├─ sync.js
-│  └─ todoActions.js
+│  ├─ todoActions.js
+│  └─ TodoTools.jsx
 └─ vite.config.js
 
 ```

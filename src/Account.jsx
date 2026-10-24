@@ -154,6 +154,9 @@ export function AccountModal({ onClose, onAdmin }) {
                         <p className="muted small" style={{ marginTop: -6 }}>
                             Sign in to keep your data safe in the cloud and use it on your phone and computer. New accounts must be approved by the owner first. Without an account everything stays on this device.
                         </p>
+                        <p className="muted small" style={{ marginTop: -6 }}>
+                            <a href="/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+                        </p>
                         <label className="field"><span>Email</span>
                             <input type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} />
                         </label>
