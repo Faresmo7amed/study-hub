@@ -97,15 +97,59 @@ export default function PrivacyPolicy() {
                 <li>To save your study data and sync it between your devices.</li>
                 <li>To decide who may use the app (owner approval).</li>
                 <li>To show your study group the information described above.</li>
+                <li>If you turn it on, to sync your events and to-dos with your Google Calendar.</li>
             </ul>
             <p>We do not use your data for advertising and we do not sell it.</p>
 
-            <h2>3. Sign in with Google</h2>
+            <h2>3. Google sign-in and Google Calendar</h2>
+
+            <h3>Sign in with Google</h3>
             <p>
                 If you choose "Continue with Google", we receive your name and email address from Google, and only use
                 them to create and identify your account as described above.
             </p>
-            {/* TODO: add the Google Calendar section here once gcal.js has been checked (scopes, what is read or written). */}
+
+            <h3>Google Calendar (optional)</h3>
+            <p>
+                Google Calendar sync is off until you press Connect in Settings. If you do, {APP_NAME} asks Google for
+                one permission, <code>https://www.googleapis.com/auth/calendar.events</code>, which lets the app view and
+                edit events on your Google Calendar. It only works with your primary calendar. This is how it uses that
+                access:
+            </p>
+            <ul>
+                <li>
+                    <b>Events, in both directions:</b> it reads the events on your primary calendar from 30 days ago to one
+                    year ahead (title, description, date, time and reminder) and shows them in {APP_NAME}. New, changed or
+                    deleted events on either side are copied to the other, so editing or deleting an event in {APP_NAME}
+                    also edits or deletes it in Google Calendar.
+                </li>
+                <li>
+                    <b>To-dos, in one direction:</b> if this option is on, your to-dos from the last 7 days and the next 60
+                    days are added to your Google Calendar as all-day items (marked ☐ or ☑). Changes made in Google
+                    Calendar never change your to-dos.
+                </li>
+                <li><b>Reminders:</b> timed events get a pop-up reminder in Google Calendar.</li>
+            </ul>
+            <p>
+                Events imported from Google Calendar become normal {APP_NAME} events. If you are signed in to a {APP_NAME}
+                account, they are saved with your other study data (section 1) and are visible only to your own account.
+                The temporary Google access token (valid for about one hour) is kept in your browser on this device only.
+                It is not copied to our cloud database.
+            </p>
+            <p>
+                You can stop at any time by disconnecting in Settings, which revokes the token and stops syncing, or at
+                myaccount.google.com/permissions. Events and to-do items that were already copied stay where they are until
+                you delete them.
+            </p>
+            <p>
+                {APP_NAME}'s use and transfer of information received from Google APIs adheres to the{' '}
+                <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">
+                    Google API Services User Data Policy
+                </a>
+                , including the Limited Use requirements. We use Google Calendar data only to provide the sync described
+                here. We do not sell it, use it for advertising, or transfer it to others, and we do not read it except
+                where needed for security or abuse, where the law requires it, or with your permission.
+            </p>
 
             <h2>4. Who can see your data</h2>
             <ul>

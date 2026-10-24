@@ -77,28 +77,36 @@ export function disconnectGoogle() {
 }
 
 /* ---------- Google API ---------- */
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const isRateLimit = (status, t) => status === 429 || (status === 403 && /rate ?limit/i.test(JSON.stringify((t && t.error) || {})))
+
 async function gfetch(path, { method = 'GET', body, params } = {}) {
     const url = new URL(API + path)
     Object.entries(params || {}).forEach(([k, v]) => { if (v != null) url.searchParams.set(k, v) })
-    const res = await fetch(url, {
-        method,
-        headers: { Authorization: 'Bearer ' + state().token, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-        body: body ? JSON.stringify(body) : undefined,
-    })
-    if (res.status === 204) return null
-    if (res.status === 401) {
-        patchState({ token: '', exp: 0 })
-        throw Object.assign(new Error('Google sign-in expired. Connect again.'), { code: 'expired' })
-    }
-    if (!res.ok) {
+    for (let attempt = 0; ; attempt++) {
+        const res = await fetch(url, {
+            method,
+            headers: { Authorization: 'Bearer ' + state().token, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+            body: body ? JSON.stringify(body) : undefined,
+        })
+        if (res.status === 204) return null
+        if (res.status === 401) {
+            patchState({ token: '', exp: 0 })
+            throw Object.assign(new Error('Google sign-in expired. Connect again.'), { code: 'expired' })
+        }
+        if (res.ok) return res.json()
         const t = await res.json().catch(() => ({}))
+        // Google says "too many requests": wait a little longer each time and try again (up to 5 retries)
+        if (attempt < 5 && isRateLimit(res.status, t)) {
+            await sleep(1000 * 2 ** attempt + Math.random() * 500)
+            continue
+        }
         throw Object.assign(new Error((t.error && t.error.message) || `Google answered ${res.status}`), { status: res.status })
     }
-    return res.json()
 }
 
 // Runs async jobs a few at a time (Google limits how fast one user can call)
-async function pool(jobs, size = 4) {
+async function pool(jobs, size = 2) {
     const out = []
     let i = 0
     await Promise.all(Array.from({ length: Math.min(size, jobs.length) }, async () => {
