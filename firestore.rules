@@ -9,7 +9,7 @@ service cloud.firestore {
     // 2) Use the same id as VITE_ADMIN_UID in your .env file.
     // ------------------------------------------------------------------
     function isOwner() {
-      return request.auth != null && request.auth.uid == 'PASTE_YOUR_ADMIN_UID_HERE';
+      return request.auth != null && request.auth.uid == 'IhNNk5cc9POqAmzeYIrunzp96bU2';
     }
     function approvedUser(uid) {
       return exists(/databases/$(database)/documents/approved/$(uid));
