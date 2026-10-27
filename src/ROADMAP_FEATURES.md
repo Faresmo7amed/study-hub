@@ -293,3 +293,34 @@ interface Progress {
 - The vertical layout has fixed square sizes; very large roadmaps (hundreds of items) would need virtualised rendering.
 - Priorities are four fixed levels; per-item custom colours and custom tags do not exist.
 - No version history for a roadmap, and no multi-author editing.
+
+---
+
+## 14. Tree layout, threads, side topics, connections and the zoomable canvas (Study Hub)
+
+This replaces the left/right snake described in sections 2 and 7. Progress rules (sections 5 and 6) are unchanged: every topic, side topic and subtopic counts as one item.
+
+| Feature | Behaviour |
+|---|---|
+| Centred tree | The first topic of a thread sits in the middle; the next topics stack straight below it (30 px gap). |
+| Threads | Parallel paths side by side, each with a header card (name, progress, hover actions: + Topic, move left/right, delete). Create them with **+ Thread** or choose 1 to 4 when creating a roadmap. |
+| Side topics | **+ Side topic** (or hover a topic and press ＋→, or the drawer button) starts a path to the right of a topic, for example Node.js beside TypeScript. A side path can have its own topics below it and its own side topics. |
+| Subtopics | Fan out to the left of their topic, 5 per column; the 6th starts a new column further left. |
+| Connections | **Connect** (or 🔗 on a topic, or the drawer list) links any topic to any other, across threads. Drawn as a dashed arrow, green once the source is done. Click a line to remove it. |
+| Zoom and move | Wheel zooms (button "Wheel: zoom / move" switches it; Ctrl + wheel and pinch always zoom). Drag the background, or hold **Space** and drag anywhere, or use the middle mouse button, to move. Keys when the canvas has focus: arrows move, + and - zoom, 0 fits, 1 is 100 %. Fit, 100 % and Full screen buttons. Range 15 % to 250 %. |
+| Sounds | New category "Roadmap map": zoom steps, zoom limit, fit, pick, connect, unlink, side topic, thread. |
+
+Data (all optional on old roadmaps; `ensureStructure()` in `roadmapLayout.js` repairs them):
+
+```ts
+interface Roadmap { /* ...existing */ threads: { id: string; title: string }[]
+                    lanes:   { id: string; thread: string; from: string | null }[]   // from = topic the side path grows out of
+                    conns:   { id: string; from: string; to: string }[] }
+interface Item    { /* ...existing */ lane: string }                                    // top-level topics only
+```
+
+- Topics stay in the flat `topics` array, so progress in Dashboard, Study Group and Notes is computed exactly as before.
+- Old roadmaps load as one thread ("Main path") with one path and no connections, and are saved in the new shape on first open.
+- Copying or importing a roadmap gives every object a new id and rewrites the references between them.
+- Deleting a topic moves its side paths to the nearest topic of its own path and removes its connections.
+- Layout uses fixed box sizes (topic 230x132, subtopic 180x50), so positions are computed, not measured.

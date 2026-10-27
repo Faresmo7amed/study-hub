@@ -7,7 +7,7 @@ import { getStore } from './shared'
    Settings live in the local-only store key "sound" (they are not synced between devices).
    ============================================================ */
 
-export const SOUND_DEFAULTS = { on: true, volume: 0.7, cats: { items: true, edits: true, rewards: true, reminders: true, focus: true, study: true } }
+export const SOUND_DEFAULTS = { on: true, volume: 0.7, cats: { items: true, edits: true, rewards: true, reminders: true, focus: true, study: true, map: true } }
 
 export const SOUND_CATS = {
     items: 'Checking items',
@@ -16,6 +16,7 @@ export const SOUND_CATS = {
     reminders: 'Event reminders',
     focus: 'Focus timer',
     study: 'Study group',
+    map: 'Roadmap map (zoom, branches, connections)',
 }
 
 export const SOUND_INFO = {
@@ -45,6 +46,15 @@ export const SOUND_INFO = {
     friendon: { label: 'A friend starts studying', cat: 'study' },
     cheer: { label: 'A friend cheers you', cat: 'study' },
     groupgoal: { label: 'Group goal reached', cat: 'study' },
+    zoomin: { label: 'Zoom in', cat: 'map' },
+    zoomout: { label: 'Zoom out', cat: 'map' },
+    zoomlimit: { label: 'Zoom limit reached', cat: 'map' },
+    fit: { label: 'Fit roadmap to screen', cat: 'map' },
+    pick: { label: 'Pick a topic to connect', cat: 'map' },
+    connect: { label: 'Connect two topics', cat: 'map' },
+    unlink: { label: 'Remove a connection', cat: 'map' },
+    branch: { label: 'Add a side topic', cat: 'map' },
+    thread: { label: 'Add a thread', cat: 'map' },
 }
 
 let ctx = null
@@ -213,6 +223,40 @@ const SOUNDS = {
         bell(N.E6, 0.15, 1.4, 0.18)
         bell(N.G6, 0.3, 1.5, 0.18)
         bell(N.C7, 0.45, 1.8, 0.14)
+    },
+    zoomin() {
+        tone(620, 0, 0.05, { type: 'triangle', gain: 0.07, slideTo: 780 })
+    },
+    zoomout() {
+        tone(700, 0, 0.05, { type: 'triangle', gain: 0.07, slideTo: 540 })
+    },
+    zoomlimit() {
+        tone(190, 0, 0.1, { gain: 0.12, slideTo: 130 })
+    },
+    fit() {
+        tone(520, 0, 0.08, { type: 'triangle', gain: 0.11 })
+        tone(780, 0.07, 0.14, { type: 'triangle', gain: 0.11 })
+    },
+    pick() {
+        tone(1040, 0, 0.05, { type: 'triangle', gain: 0.1 })
+        tone(1560, 0.04, 0.07, { gain: 0.07 })
+    },
+    connect() {
+        tone(700, 0, 0.08, { type: 'triangle', gain: 0.16 })
+        tone(1050, 0.07, 0.1, { type: 'triangle', gain: 0.16 })
+        tone(1400, 0.14, 0.2, { type: 'triangle', gain: 0.14 })
+    },
+    unlink() {
+        tone(900, 0, 0.12, { gain: 0.12, slideTo: 420 })
+    },
+    branch() {
+        tone(520, 0, 0.07, { gain: 0.13, slideTo: 780 })
+        tone(780, 0.07, 0.1, { gain: 0.13, slideTo: 1040 })
+    },
+    thread() {
+        tone(N.G5, 0, 0.1, { type: 'triangle', gain: 0.17 })
+        tone(N.C6, 0.08, 0.1, { type: 'triangle', gain: 0.17 })
+        tone(N.E6, 0.16, 0.26, { type: 'triangle', gain: 0.17 })
     },
 }
 

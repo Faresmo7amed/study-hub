@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { addDays, addTodoToday, confetti, getStore, isHttp, isStored, notify, openNote, setStore, startOfDay, todayISO, uid, useStore } from './shared'
 import { play } from './sound'
@@ -6,14 +6,19 @@ import { Icon, IconPicker } from './Icons'
 import BlockEditor, { blocksText, blocksToMarkdown, cleanBlocks, mdToBlocks } from './BlockEditor'
 import RoadmapShare from './RoadmapShare'
 import { cleanIcon } from './iconUtils'
+import { clampK, connPath, edgePath, ensureStructure, fitView, layoutMap, readingOrder, startView, structureOk } from './roadmapLayout'
 
 /* ============================================================
-   Roadmap: a vertical, snake-shaped learning path
-   - topics are squares, subtopics branch off the side, gates sit under a topic
+   Roadmap: a learning path drawn as a tree you can zoom and move around
+   - threads are parallel paths side by side; the first topic of a thread sits in the middle and the rest stack below it
+   - side topics branch to the right of a topic; subtopics fan out to its left (new column after 5)
+   - connections link any two topics, even across threads (see roadmapLayout.js)
+   - gates sit under a topic
    - the connector line fills with colour when a topic (and its gate) is done
    - click any square to open its study notes, checklist, resources and projects
    ============================================================ */
 
+const noop = () => {}
 const PR = { must: 'Mandatory', rec: 'Recommended', nice: 'Nice to have', opt: 'Optional', adv: 'Advanced' }
 const STATUS = { todo: 'Not started', doing: 'In progress', done: 'Done' }
 const RES_TYPES = ['Docs', 'Video', 'Article', 'Course', 'Book']
@@ -28,6 +33,8 @@ const norm = (t, top = true) => {
     o.subs = top ? (t.subs || []).map(x => norm(x, false)) : []
     o.res = (t.res || []).map(x => ({ id: uid(), type: 'Docs', t: '', url: '', ...x }))
     o.proj = (t.proj || []).map(x => ({ id: uid(), t: '', desc: '', done: false, ...x }))
+    if (top) o.lane = typeof t.lane === 'string' ? t.lane : ''
+    else delete o.lane
     o.gate = top && t.gate ? { name: '', desc: '', highlight: false, done: false, ...t.gate } : null
     if (!PR[o.priority]) o.priority = 'rec'
     if (!STATUS[o.status]) o.status = 'todo'
@@ -43,7 +50,15 @@ const norm = (t, top = true) => {
     return o
 }
 
-const normMap = m => ({ id: m.id || uid(), title: String(m.title == null ? 'Untitled roadmap' : m.title), topics: (m.topics || []).map(t => norm(t)) })
+// Old roadmaps get one thread and one path; threads, lanes (paths) and conns (connections) are kept when present
+const normMap = m => ensureStructure({
+    id: m.id || uid(),
+    title: String(m.title == null ? 'Untitled roadmap' : m.title),
+    topics: (m.topics || []).map(t => norm(t)),
+    threads: Array.isArray(m.threads) ? m.threads : [],
+    lanes: Array.isArray(m.lanes) ? m.lanes : [],
+    conns: Array.isArray(m.conns) ? m.conns : [],
+})
 
 const seedMaps = () => {
     const fullstack = normMap({
@@ -172,6 +187,51 @@ const reid = x => {
     if (x.id) x.id = uid()
     Object.values(x).forEach(reid)
 }
+// Gives every object of a roadmap a new id AND rewrites the references between them (topic -> lane, lane -> thread / topic, connections).
+// When to use it: when a roadmap is copied or imported, so the copy never touches the original.
+const reidMap = m => {
+    const ids = new Map()
+    const walk = x => {
+        if (!x || typeof x !== 'object') return
+        if (x.id) {
+            const n = uid()
+            ids.set(x.id, n)
+            x.id = n
+        }
+        Object.values(x).forEach(walk)
+    }
+    walk(m)
+    const f = v => ids.get(v) || v
+    ;(m.topics || []).forEach(t => { if (t.lane) t.lane = f(t.lane) })
+    ;(m.lanes || []).forEach(l => {
+        l.thread = f(l.thread)
+        if (l.from) l.from = f(l.from)
+    })
+    ;(m.conns || []).forEach(c => {
+        c.from = f(c.from)
+        c.to = f(c.to)
+    })
+    return m
+}
+
+// Removes a topic from a draft roadmap and keeps the tree valid: side paths that grew out of it move to the nearest
+// topic of its own path, connections to it are removed, and an emptied side path disappears.
+const dropTopic = (d, id) => {
+    const t = d.topics.find(x => x.id === id)
+    if (!t) return
+    const lane = d.lanes.find(l => l.id === t.lane)
+    const peers = d.topics.filter(x => x.lane === t.lane)
+    const i = peers.indexOf(t)
+    const heir = peers[i - 1] || peers[i + 1] || null
+    d.lanes.forEach(l => { if (l.from === id) l.from = heir ? heir.id : lane ? lane.from : null })
+    d.topics.splice(d.topics.indexOf(t), 1)
+    d.conns = d.conns.filter(c => c.from !== id && c.to !== id)
+    if (!heir && lane) {
+        const otherRoots = d.lanes.some(l => l.thread === lane.thread && !l.from && l.id !== lane.id)
+        if (lane.from || otherRoots) d.lanes = d.lanes.filter(l => l.id !== lane.id)
+    }
+}
+
 /* eslint-disable react-refresh/only-export-components */
 // What it does: returns the user's roadmaps, even if they were never saved yet.
 export const loadRoadmaps = () => getStore('roadmaps', initialStore)
@@ -189,9 +249,10 @@ export function openRoadmap(id) {
 
 // What it does: finds the first unfinished mandatory item (or any unfinished item) of the open roadmap.
 export function nextUp(store) {
-    const m = store.maps[store.active] || store.maps[store.order[0]]
-    if (!m) return null
-    const left = itemsOf(m).filter(t => effStatus(t, store.maps) !== 'done')
+    const raw = store.maps[store.active] || store.maps[store.order[0]]
+    if (!raw) return null
+    const m = structureOk(raw) ? raw : ensureStructure(structuredClone(raw))
+    const left = readingOrder(m).flatMap(x => [x.t, ...x.t.subs]).filter(t => effStatus(t, store.maps) !== 'done')
     const t = left.find(x => x.priority === 'must') || left[0]
     return t ? { title: t.title || 'Untitled', icon: t.icon || '', roadmap: m.title, pct: mapProgress(m, store.maps).pct } : null
 }
@@ -200,103 +261,17 @@ export function nextUp(store) {
 // When to use it: when sharing a roadmap with a group.
 export function snapshotRoadmap(store, id) {
     const maps = store.maps
-    const m = maps[id]
+    const m = structureOk(maps[id]) ? maps[id] : ensureStructure(structuredClone(maps[id]))
     const item = (t, top) => ({
-        id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40), est: t.est || 0, icon: t.icon && t.icon.length <= 6000 ? t.icon : '',
+        id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40), est: t.est || 0, lane: top ? t.lane : undefined, icon: t.icon && t.icon.length <= 6000 ? t.icon : '',
         priority: t.priority, status: effStatus(t, maps), pct: prog(t, maps), ref: null, mirror: null,
         subs: top ? t.subs.map(s => item(s, false)) : [],
         gate: top && t.gate ? { name: t.gate.name, desc: t.gate.desc, highlight: t.gate.highlight, done: t.gate.done } : null,
     })
     const colors = { ...DEFAULT_COLORS, ...(getStore('settings', {}).roadmapColors || {}) }
-    return { v: 2, roadmap: { id: m.id, title: m.title, colors, topics: m.topics.map(t => item(t, true)) } }
+    return { v: 2, roadmap: { id: m.id, title: m.title, colors, threads: m.threads, lanes: m.lanes, conns: m.conns, topics: m.topics.map(t => item(t, true)) } }
 }
 /* eslint-enable react-refresh/only-export-components */
-const NS = 'http://www.w3.org/2000/svg'
-const svgEl = (tag, attrs) => {
-    const n = document.createElementNS(NS, tag)
-    Object.entries(attrs).forEach(([k, v]) => n.setAttribute(k, v))
-    return n
-}
-
-/* ---------- connector lines ---------- */
-// What it does: draws the lines between the squares from their real position on screen. The main line fills
-// with colour when a topic (and its gate) is done. Lines are drawn again after every render and every resize.
-// When to use it: in any page that shows a roadmap map. It returns the refs to attach to the map, the rows and the two SVG layers.
-function useConnectors(data, st, hideSubs = false) {
-    const mapRef = useRef(null)
-    const rowsRef = useRef(null)
-    const mainSvg = useRef(null)
-    const subSvg = useRef(null)
-    const drawRef = useRef(null)
-
-    useLayoutEffect(() => {
-        const draw = () => {
-            const map = mapRef.current
-            const svg = mainSvg.current
-            const ls = subSvg.current
-            if (!map || !svg || !ls) return
-            const m = map.getBoundingClientRect()
-            const cells = [...map.querySelectorAll('.rm-cell')]
-            const mobile = window.innerWidth < 700
-            const want = Math.max(0, cells.length - 1)
-            if (svg.children.length !== want * 2) {
-                svg.replaceChildren()
-                for (let i = 0; i < want; i++) svg.append(svgEl('path', { class: 'rm-base' }), svgEl('path', { class: 'rm-fill', pathLength: 1 }))
-            }
-            cells.slice(0, -1).forEach((cell, i) => {
-                const A = cell.getBoundingClientRect()
-                const R = cell.parentNode.getBoundingClientRect()
-                const B = cells[i + 1].querySelector('.rm-node').getBoundingClientRect()
-                const x1 = A.left + A.width / 2 - m.left
-                const y0 = (mobile ? R.bottom : A.bottom) - m.top
-                const y1 = R.bottom - m.top
-                const x2 = B.left + B.width / 2 - m.left
-                const y2 = B.top - m.top
-                const d = Math.max(30, (y2 - y1) * 0.6)
-                const D = `M${x1} ${y0}V${y1}C${x1} ${y1 + d},${x2} ${y2 - d},${x2} ${y2}`
-                const t = data.topics[i]
-                svg.children[2 * i].setAttribute('d', D)
-                svg.children[2 * i + 1].setAttribute('d', D)
-                svg.children[2 * i + 1].classList.toggle('on', !!t && st(t) === 'done' && (!t.gate || t.gate.done))
-            })
-            ls.replaceChildren()
-            if (hideSubs || mobile) return
-            data.topics.forEach(t => {
-                const row = document.getElementById('rm-r-' + t.id)
-                if (!row) return
-                const box = row.querySelector('.rm-cell .rm-node').getBoundingClientRect()
-                const toRight = row.classList.contains('l')
-                t.subs.forEach(s => {
-                    const el = document.getElementById('rm-n-' + s.id)
-                    if (!el) return
-                    const e = el.getBoundingClientRect()
-                    const xs = (toRight ? box.right : box.left) - m.left
-                    const xe = (toRight ? e.left : e.right) - m.left
-                    const ys = box.top + box.height / 2 - m.top
-                    const ye = e.top + e.height / 2 - m.top
-                    ls.append(svgEl('path', { class: 'rm-sl' + (st(s) === 'done' ? ' on' : ''), d: `M${xs} ${ys}H${(xs + xe) / 2}V${ye}H${xe}` }))
-                })
-            })
-        }
-        drawRef.current = draw
-        draw()
-    })
-
-    useEffect(() => {
-        const redraw = () => drawRef.current()
-        const ro = new ResizeObserver(redraw)
-        if (rowsRef.current) ro.observe(rowsRef.current)
-        window.addEventListener('resize', redraw)
-        if (document.fonts && document.fonts.ready) document.fonts.ready.then(redraw)
-        return () => {
-            ro.disconnect()
-            window.removeEventListener('resize', redraw)
-        }
-    }, [])
-
-    return { mapRef, rowsRef, mainSvg, subSvg }
-}
-
 
 // What it does: estimates when a roadmap will be finished from how many items you completed in the last 28 days.
 // When to use it: under the progress bar. Items finished before this feature existed have no date, so they are not counted.
@@ -311,38 +286,46 @@ const forecast = (items, st) => {
     return { left: left.length, perWeek: Math.round(perDay * 7 * 10) / 10, date: days > 730 ? 'in more than two years' : 'around ' + addDays(startOfDay(new Date()), days).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) }
 }
 
-// What it does: turns a roadmap into a Markdown checklist (topics, subtopics, steps, projects, resources, notes).
+// What it does: turns a roadmap into a Markdown checklist (threads, topics, subtopics, steps, projects, resources, notes, connections).
 const toMarkdown = (data, maps) => {
     const box = t => (effStatus(t, maps) === 'done' ? '[x]' : '[ ]')
     const meta = t => [t.when, t.est > 0 && `${t.est} h`, t.due && `due ${t.due}`, PR[t.priority]].filter(Boolean).join(' · ')
+    const nameOf = id => (data.topics.find(x => x.id === id) || {}).title || 'Untitled'
     const out = [`# ${data.title || 'Roadmap'}`, '']
-    data.topics.forEach((t, i) => {
-        out.push(`## ${i + 1}. ${t.title || 'Untitled'} (${STATUS[effStatus(t, maps)]})`)
-        if (t.desc) out.push(`_${t.desc}_`)
-        out.push(`- ${box(t)} ${t.title || 'Untitled'}${meta(t) ? ' · ' + meta(t) : ''}`)
-        t.subs.forEach(x => out.push(`  - ${box(x)} ${x.title || 'Untitled'}${meta(x) ? ' · ' + meta(x) : ''}`))
-        if (t.steps.length) out.push('', '**Steps**', ...t.steps.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}`))
-        if (t.proj.length) out.push('', '**Projects**', ...t.proj.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}${x.desc ? ' · ' + x.desc : ''}`))
-        if (t.res.length) out.push('', '**Resources**', ...t.res.map(x => `- ${x.type}: ${x.url ? `[${x.t || x.url}](${x.url})` : x.t}`))
-        if (t.gate) out.push('', `**Gate:** ${t.gate.name}${t.gate.done ? ' (passed)' : ''}${t.gate.desc ? ' · ' + t.gate.desc : ''}`)
-        if (t.content && t.content.length) out.push('', blocksToMarkdown(t.content))
-        else if (t.notes) out.push('', t.notes)
-        out.push('')
+    const order = readingOrder(data)
+    data.threads.forEach(th => {
+        if (data.threads.length > 1) out.push(`# Thread: ${th.title || 'Untitled'}`, '')
+        order.filter(x => x.thread === th.id).forEach(({ t, depth }, i) => {
+            out.push(`## ${i + 1}. ${t.title || 'Untitled'} (${STATUS[effStatus(t, maps)]})${depth ? ' · side topic' : ''}`)
+            if (t.desc) out.push(`_${t.desc}_`)
+            out.push(`- ${box(t)} ${t.title || 'Untitled'}${meta(t) ? ' · ' + meta(t) : ''}`)
+            t.subs.forEach(x => out.push(`  - ${box(x)} ${x.title || 'Untitled'}${meta(x) ? ' · ' + meta(x) : ''}`))
+            if (t.steps.length) out.push('', '**Steps**', ...t.steps.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}`))
+            if (t.proj.length) out.push('', '**Projects**', ...t.proj.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}${x.desc ? ' · ' + x.desc : ''}`))
+            if (t.res.length) out.push('', '**Resources**', ...t.res.map(x => `- ${x.type}: ${x.url ? `[${x.t || x.url}](${x.url})` : x.t}`))
+            if (t.gate) out.push('', `**Gate:** ${t.gate.name}${t.gate.done ? ' (passed)' : ''}${t.gate.desc ? ' · ' + t.gate.desc : ''}`)
+            if (t.content && t.content.length) out.push('', blocksToMarkdown(t.content))
+            else if (t.notes) out.push('', t.notes)
+            out.push('')
+        })
     })
+    if (data.conns.length) out.push('# Connections', '', ...data.conns.map(c => `- ${nameOf(c.from)} → ${nameOf(c.to)}`), '')
     return out.join('\n')
 }
 
 /* ---------- map pieces ---------- */
-function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }) {
+function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo, style, sel, pickable, tools }) {
     const linked = t.ref && maps[t.ref] ? maps[t.ref] : null
     const mirrored = !linked && t.mirror && maps[t.mirror.map] ? maps[t.mirror.map] : null
     const goto = linked || mirrored
     const status = effStatus(t, maps)
+    const late = Boolean(t.due) && status !== 'done' && t.due < todayISO()
+    const meta = n ? [t.when, t.est > 0 && `${t.est} h`].filter(Boolean).join(' · ') : ''
     return (
-        <div id={'rm-n-' + t.id} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${goto ? ' linked' : ''}${t.icon ? ' has-ic' : ''}`}
+        <div id={'rm-n-' + t.id} style={style} className={`rm-node p-${t.priority} ${status}${n ? '' : ' s'}${dim ? ' dim' : ''}${goto ? ' linked' : ''}${t.icon ? ' has-ic' : ''}${sel ? ' sel' : ''}${pickable ? ' pickable' : ''}`}
             onDragOver={e => { if (onMoveTo) e.preventDefault() }}
             onDrop={e => { if (!onMoveTo) return; e.preventDefault(); onMoveTo(e.dataTransfer.getData('text/plain'), t.id) }}>
-            {onMoveTo && <span className="rm-drag" draggable onDragStart={e => e.dataTransfer.setData('text/plain', t.id)} title="Drag to reorder" aria-hidden="true">⠿</span>}
+            {onMoveTo && <span className="rm-drag" draggable onDragStart={e => e.dataTransfer.setData('text/plain', t.id)} title="Drag onto another topic of the same path to reorder" aria-hidden="true">⠿</span>}
             <button className="rm-chk" disabled={!!linked || readOnly}
                 title={linked ? 'Done automatically when the linked roadmap is finished' : status === 'done' ? 'Mark as not done' : 'Mark as done'}
                 aria-label={`Toggle ${t.title || 'item'} done`} aria-pressed={status === 'done'} onClick={e => onToggle(t, e.currentTarget)}>✓</button>
@@ -350,27 +333,415 @@ function Node({ t, n, dim, maps, onOpen, onToggle, onGoRef, readOnly, onMoveTo }
             {t.icon && <span className="rm-ic" aria-hidden="true"><Icon value={t.icon} size={n ? 20 : 16} /></span>}
             <button className="rm-body" onClick={() => onOpen(t.id)}>
                 <b>{n ? n + '. ' : ''}{t.title || 'Untitled'}</b>
-                {n && (t.when || t.est > 0) && <em>{[t.when, t.est > 0 && `${t.est} h`].filter(Boolean).join(' · ')}</em>}
-                {t.due && <span className={'rm-due' + (status !== 'done' && t.due < todayISO() ? ' late' : '')}>⏰ {t.due}{status !== 'done' && t.due < todayISO() ? ' · overdue' : ''}</span>}
+                {meta && <em>{meta}</em>}
                 {n && t.desc && <small>{t.desc}</small>}
-                {goto && <span className="rm-ref">↗ {goto.title}</span>}
-                <span className="rm-pr">{PR[t.priority]}</span>
+                <span className="rm-foot">
+                    <span className="rm-pr">{PR[t.priority]}</span>
+                    {t.due && <span className={'rm-due' + (late ? ' late' : '')}>⏰ {t.due}{late ? ' · overdue' : ''}</span>}
+                    {goto && <span className="rm-ref">↗ {goto.title}</span>}
+                </span>
                 {(n || goto) && <span className="rm-bar"><i style={{ width: prog(t, maps) + '%' }} /></span>}
             </button>
+            {tools && (
+                <div className="rm-act" role="toolbar" aria-label={`Actions for ${t.title || 'topic'}`}>
+                    <button onClick={() => tools.addBelow(t.id)} title="Add a topic below this one" aria-label="Add a topic below">＋↓</button>
+                    <button onClick={() => tools.addSide(t.id)} title="Add a side topic beside this one" aria-label="Add a side topic">＋→</button>
+                    <button onClick={() => tools.startLink(t.id)} title="Connect this topic to another topic" aria-label="Connect to another topic">🔗</button>
+                </div>
+            )}
         </div>
     )
 }
 
-function Gate({ t, onToggle }) {
+function Gate({ t, onToggle, style }) {
     const g = t.gate
     return (
-        <div className="rm-gate">
+        <div className="rm-gate" style={style}>
             <i className="rm-gl" />
             <div className="rm-gr">
                 <button className={'rm-dm' + (g.highlight ? ' key' : '') + (g.done ? ' on' : '')} aria-label={`Gate ${g.name || ''}: ${g.done ? 'passed' : 'not passed'}`} aria-pressed={g.done}
                     title={g.done ? 'Gate passed' : 'Mark gate as passed'} onClick={() => onToggle(t)} />
                 <div><b>{g.name || 'Gate'}</b>{g.desc && <small>{g.desc}</small>}</div>
             </div>
+        </div>
+    )
+}
+
+/* ---------- the canvas ---------- */
+/*
+   What it does: draws a roadmap as a tree you can zoom and move around, like a design tool.
+   - Scroll zooms (or moves, see the "Scroll" button). Ctrl + scroll and a trackpad pinch always zoom.
+   - Drag the empty background, or hold Space and drag anywhere, or drag with the middle mouse button, to move.
+   - Arrow keys move, + and - zoom, 0 fits everything, 1 goes back to 100 % (when the canvas has focus).
+   Positions come from layoutMap() (fixed box sizes), so nothing is measured from the page.
+   The zoom and move are applied straight to the element (not through React state), so they stay smooth on big roadmaps.
+   Props: data (a repaired roadmap), maps, st(item), vis(item), hideSubs, readOnly, apiRef (receives { focusNode, fit }),
+   wheel ('zoom' | 'pan'), setWheel, full, setFull, mode ({ kind, from } | null), sel (open item id), acts (handlers, null when read-only)
+*/
+const typing = el => Boolean(el) && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
+const stepOf = k => Math.round(Math.log(k) / Math.log(1.25))
+const NOACTS = { open: noop, toggle: noop, toggleGate: noop, goRef: noop }
+const ITEM = '.rm-node,.rm-gate,.rm-th,.rm-addsub,.rm-addfirst,.rm-zoombar,.rm-banner,.rm-cx,.rm-chit,button,input,select,textarea,a'
+
+function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWheel, full, setFull, mode, sel, acts }) {
+    const editable = !readOnly
+    const A = acts || NOACTS
+    const L = useMemo(() => layoutMap(data, { showSubs: !hideSubs, editable }), [data, hideSubs, editable])
+    const vpRef = useRef(null)
+    const worldRef = useRef(null)
+    const labelRef = useRef(null)
+    const view = useRef({ x: 0, y: 0, k: 1 })
+    const latest = useRef({})
+    const pointers = useRef(new Map())
+    const drag = useRef(null)
+    const pinch = useRef(null)
+    const space = useRef(false)
+    const hover = useRef(false)
+    const lastStep = useRef(0)
+    const lastLimit = useRef(0)
+    const shownMap = useRef('')
+    const [selConn, setSelConn] = useState(null)
+    const [armedThread, setArmedThread] = useState(null)
+    const mark = useId().replace(/[^a-zA-Z0-9_-]/g, '')
+
+    const size = () => {
+        const r = vpRef.current.getBoundingClientRect()
+        return { w: r.width, h: r.height, left: r.left }
+    }
+    const apply = (animate = false) => {
+        const w = worldRef.current
+        const vp = vpRef.current
+        if (!w || !vp) return
+        const v = view.current
+        w.classList.toggle('anim', animate)
+        w.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.k})`
+        vp.style.backgroundPosition = `${v.x}px ${v.y}px`
+        vp.style.backgroundSize = `${24 * v.k}px ${24 * v.k}px`
+        if (labelRef.current) labelRef.current.textContent = Math.round(v.k * 100) + '%'
+    }
+    const pan = (dx, dy) => {
+        view.current.x += dx
+        view.current.y += dy
+        apply()
+    }
+    // Zoom by a factor around a point of the canvas (cx, cy in pixels from its top-left corner)
+    const zoomAt = (factor, cx, cy, animate = false) => {
+        const v = view.current
+        const k = clampK(v.k * factor)
+        if (k === v.k) {
+            const now = Date.now()
+            if (now - lastLimit.current > 500) {
+                lastLimit.current = now
+                play('zoomlimit')
+            }
+            return
+        }
+        const r = k / v.k
+        view.current = { k, x: cx - (cx - v.x) * r, y: cy - (cy - v.y) * r }
+        apply(animate)
+        const s = stepOf(k)
+        if (s !== lastStep.current) {
+            play(s > lastStep.current ? 'zoomin' : 'zoomout')
+            lastStep.current = s
+        }
+    }
+    const zoomCenter = factor => {
+        const s = size()
+        zoomAt(factor, s.w / 2, s.h / 2, true)
+    }
+    const fit = () => {
+        const s = size()
+        view.current = fitView(latest.current.L, s.w, s.h)
+        lastStep.current = stepOf(view.current.k)
+        apply(true)
+        play('fit')
+    }
+    const actual = () => zoomCenter(1 / view.current.k)
+    // Centre a topic (used after adding one, and by "Continue"). drawer: keep it clear of the side panel.
+    const focusNode = (id, opts = {}) => {
+        const r = latest.current.L.nodes.get(id) || latest.current.L.subs.get(id)
+        if (!r || !vpRef.current) return
+        const s = size()
+        const room = opts.drawer ? Math.max(260, Math.min(s.w, window.innerWidth - 520 - s.left)) : s.w
+        const v = view.current
+        const k = clampK(Math.min(1.2, Math.max(v.k, 0.7)))
+        view.current = { k, x: room / 2 - (r.x + r.w / 2) * k, y: s.h / 2 - (r.y + r.h / 2) * k }
+        lastStep.current = stepOf(k)
+        apply(true)
+    }
+
+    // The listeners below are added once, so they read the newest functions from here
+    useLayoutEffect(() => {
+        latest.current = { L, wheel, zoomAt, pan, zoomCenter, fit, actual, focusNode, apply }
+    })
+    useLayoutEffect(() => {
+        if (apiRef) apiRef.current = { focusNode: (id, o) => latest.current.focusNode(id, o), fit: () => latest.current.fit() }
+    }, [apiRef])
+
+    // First view of a roadmap: readable size, centred, starting at the top
+    useLayoutEffect(() => {
+        if (shownMap.current === data.id) return
+        shownMap.current = data.id
+        view.current = startView(L, size().w)
+        lastStep.current = stepOf(view.current.k)
+        apply()
+    })
+
+    // Mouse wheel and trackpad pinch (needs a non-passive listener to stop the page from scrolling)
+    useEffect(() => {
+        const el = vpRef.current
+        const onWheel = e => {
+            e.preventDefault()
+            const { zoomAt: zoom, pan: move, wheel: mode2 } = latest.current
+            const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
+            const dx = e.deltaX * unit
+            const dy = e.deltaY * unit
+            if (e.ctrlKey || e.metaKey || (mode2 === 'zoom' && !e.shiftKey)) {
+                const r = el.getBoundingClientRect()
+                zoom(Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top)
+            } else if (e.shiftKey) move(-(dx || dy), 0)
+            else move(-dx, -dy)
+        }
+        el.addEventListener('wheel', onWheel, { passive: false })
+        return () => el.removeEventListener('wheel', onWheel)
+    }, [])
+
+    // Hold Space to move the canvas with the mouse (only while the pointer is over it, and never while typing)
+    useEffect(() => {
+        const vp = vpRef.current
+        const clear = () => {
+            space.current = false
+            vp.classList.remove('pan-ready')
+        }
+        const down = e => {
+            if (e.code !== 'Space' || typing(e.target) || document.querySelector('.modal-back')) return
+            if (!(hover.current || document.activeElement === vp)) return
+            e.preventDefault()
+            if (!space.current) {
+                space.current = true
+                vp.classList.add('pan-ready')
+            }
+        }
+        const up = e => {
+            if (e.code !== 'Space' || !space.current) return
+            e.preventDefault()
+            clear()
+        }
+        window.addEventListener('keydown', down)
+        window.addEventListener('keyup', up)
+        window.addEventListener('blur', clear)
+        return () => {
+            window.removeEventListener('keydown', down)
+            window.removeEventListener('keyup', up)
+            window.removeEventListener('blur', clear)
+        }
+    }, [])
+
+    const onPointerDown = e => {
+        if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 1) return
+        const onItem = e.target.closest(ITEM)
+        if (!(e.button === 1 || space.current || !onItem)) return
+        e.preventDefault()
+        setSelConn(null)
+        vpRef.current.focus({ preventScroll: true })
+        vpRef.current.setPointerCapture(e.pointerId)
+        pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        const v = view.current
+        if (pointers.current.size === 1) {
+            drag.current = { sx: e.clientX, sy: e.clientY, vx: v.x, vy: v.y }
+            vpRef.current.classList.add('panning')
+        } else if (pointers.current.size === 2) {
+            const [a, b] = [...pointers.current.values()]
+            const r = vpRef.current.getBoundingClientRect()
+            pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, cx: (a.x + b.x) / 2 - r.left, cy: (a.y + b.y) / 2 - r.top, v: { ...v } }
+            drag.current = null
+        }
+    }
+    const onPointerMove = e => {
+        if (!pointers.current.has(e.pointerId)) return
+        pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        if (pinch.current && pointers.current.size >= 2) {
+            const [a, b] = [...pointers.current.values()]
+            const r = vpRef.current.getBoundingClientRect()
+            const p = pinch.current
+            const k = clampK(p.v.k * (Math.hypot(a.x - b.x, a.y - b.y) / p.d))
+            const cx = (a.x + b.x) / 2 - r.left
+            const cy = (a.y + b.y) / 2 - r.top
+            const wx = (p.cx - p.v.x) / p.v.k
+            const wy = (p.cy - p.v.y) / p.v.k
+            view.current = { k, x: cx - wx * k, y: cy - wy * k }
+            apply()
+        } else if (drag.current) {
+            const d = drag.current
+            view.current.x = d.vx + e.clientX - d.sx
+            view.current.y = d.vy + e.clientY - d.sy
+            apply()
+        }
+    }
+    const onPointerEnd = e => {
+        pointers.current.delete(e.pointerId)
+        if (pointers.current.size < 2) pinch.current = null
+        lastStep.current = stepOf(view.current.k)
+        if (!pointers.current.size) {
+            drag.current = null
+            vpRef.current.classList.remove('panning')
+        } else if (pointers.current.size === 1) {
+            const [p] = [...pointers.current.values()]
+            drag.current = { sx: p.x, sy: p.y, vx: view.current.x, vy: view.current.y }
+        }
+    }
+    const onKeyDown = e => {
+        if (typing(e.target) || e.target.closest('button') || e.ctrlKey || e.metaKey || e.altKey) return
+        const step = e.shiftKey ? 240 : 80
+        const k = e.key
+        if (k === 'ArrowLeft') pan(step, 0)
+        else if (k === 'ArrowRight') pan(-step, 0)
+        else if (k === 'ArrowUp') pan(0, step)
+        else if (k === 'ArrowDown') pan(0, -step)
+        else if (k === '+' || k === '=') zoomCenter(1.25)
+        else if (k === '-' || k === '_') zoomCenter(1 / 1.25)
+        else if (k === '0') fit()
+        else if (k === '1') actual()
+        else return
+        e.preventDefault()
+    }
+
+    /* ----- what to draw ----- */
+    const byId = new Map()
+    data.topics.forEach(t => {
+        byId.set(t.id, t)
+        t.subs.forEach(s => byId.set(s.id, s))
+    })
+    const laneThread = new Map(data.lanes.map(l => [l.id, l.thread]))
+    const stats = new Map(data.threads.map(th => [th.id, { done: 0, total: 0 }]))
+    data.topics.forEach(t => {
+        const s = stats.get(laneThread.get(t.lane))
+        if (!s) return
+        ;[t, ...t.subs].forEach(x => {
+            s.total += 1
+            if (st(x) === 'done') s.done += 1
+        })
+    })
+    const passed = t => Boolean(t) && st(t) === 'done' && (!t.gate || t.gate.done)
+    const edgeOn = e => {
+        if (e.k === 'main' || e.k === 'side') return passed(byId.get(e.a))
+        if (e.k === 'head') return Boolean(byId.get(e.b)) && st(byId.get(e.b)) !== 'todo'
+        return Boolean(byId.get(e.b)) && st(byId.get(e.b)) === 'done'
+    }
+    const conn = selConn && data.conns.find(c => c.id === selConn)
+    const connMid = conn && L.nodes.get(conn.from) && L.nodes.get(conn.to) ? connPath(L.nodes.get(conn.from), L.nodes.get(conn.to)).mid : null
+
+    return (
+        <div ref={vpRef} tabIndex={0} role="application" className={'rm-vp' + (full ? ' full' : '') + (mode ? ' moding' : '')}
+            aria-label="Roadmap canvas. Scroll to zoom. Drag the background, or hold Space and drag, to move. Arrow keys move, plus and minus zoom, 0 fits everything."
+            onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerEnd} onPointerCancel={onPointerEnd} onKeyDown={onKeyDown}
+            onMouseEnter={() => { hover.current = true }} onMouseLeave={() => { hover.current = false }}>
+            <div className="rm-world" ref={worldRef} style={{ width: L.width, height: L.height }}>
+                <svg className="rm-ov" width={L.width} height={L.height} aria-hidden="true">
+                    <defs>
+                        {['0', '1'].map(c => (
+                            <marker key={c} id={`${mark}-${c}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto" markerUnits="userSpaceOnUse">
+                                <path d="M0 0L10 5L0 10z" className={'rm-ar' + c} />
+                            </marker>
+                        ))}
+                    </defs>
+                    {L.edges.map(e => {
+                        const d = edgePath(e, L)
+                        if (!d) return null
+                        const on = edgeOn(e)
+                        const key = `${e.k}:${e.a}:${e.b}`
+                        if (e.k === 'sub' || e.k === 'subcol') return <path key={key} className={'rm-sl' + (on ? ' on' : '')} d={d} />
+                        return (
+                            <g key={key}>
+                                <path className="rm-base" d={d} />
+                                <path className={'rm-fill' + (on ? ' on' : '')} pathLength={1} d={d} />
+                            </g>
+                        )
+                    })}
+                    {data.conns.map(c => {
+                        const a = L.nodes.get(c.from)
+                        const b = L.nodes.get(c.to)
+                        if (!a || !b) return null
+                        const p = connPath(a, b)
+                        const on = passed(byId.get(c.from))
+                        return (
+                            <g key={c.id}>
+                                <path className={'rm-cn' + (on ? ' on' : '') + (selConn === c.id ? ' sel' : '')} d={p.d} markerEnd={`url(#${mark}-${on ? '1' : '0'})`} />
+                                {editable && <path className="rm-chit" d={p.d} onClick={e => { e.stopPropagation(); setSelConn(selConn === c.id ? null : c.id) }} />}
+                            </g>
+                        )
+                    })}
+                </svg>
+
+                {L.threads.map(th => {
+                    const s = stats.get(th.id) || { done: 0, total: 0 }
+                    const pct = s.total ? Math.round((100 * s.done) / s.total) : 0
+                    const i = data.threads.findIndex(x => x.id === th.id)
+                    return (
+                        <div key={th.id} className="rm-th" style={{ left: th.head.x, top: th.head.y, width: th.head.w, height: th.head.h }}>
+                            {editable
+                                ? <input className="rm-thi" value={th.title} placeholder="Thread name" aria-label="Thread name" maxLength={60} onChange={e => A.renameThread(th.id, e.target.value)} />
+                                : <b className="rm-thi">{th.title || 'Thread'}</b>}
+                            <span className="rm-thp" title={`${s.done} of ${s.total} items done in this thread`}>{pct}%</span>
+                            <span className="rm-bar"><i style={{ width: pct + '%' }} /></span>
+                            {editable && (
+                                <div className="rm-thb" role="toolbar" aria-label="Thread actions">
+                                    <button onClick={() => A.addThreadTopic(th.id)} title="Add a topic to this thread">＋ Topic</button>
+                                    <button disabled={i < 1} onClick={() => A.moveThread(th.id, -1)} title="Move this thread left" aria-label="Move thread left">←</button>
+                                    <button disabled={i >= data.threads.length - 1} onClick={() => A.moveThread(th.id, 1)} title="Move this thread right" aria-label="Move thread right">→</button>
+                                    <button className="danger" disabled={data.threads.length < 2} aria-label="Delete thread" title="Delete this thread and its topics"
+                                        onClick={() => { if (armedThread === th.id) { setArmedThread(null); A.deleteThread(th.id) } else setArmedThread(th.id) }}
+                                        onBlur={() => setArmedThread(null)}>{armedThread === th.id ? 'Click again' : '🗑'}</button>
+                                </div>
+                            )}
+                            {editable && !th.first && (
+                                <button className="rm-addfirst" style={{ top: th.head.h + 22 }} onClick={() => A.addThreadTopic(th.id)}>+ Add the first topic</button>
+                            )}
+                        </div>
+                    )
+                })}
+
+                {data.topics.map(t => {
+                    const r = L.nodes.get(t.id)
+                    if (!r) return null
+                    const g = L.gates.get(t.id)
+                    const ad = L.adds.get(t.id)
+                    return (
+                        <Fragment key={t.id}>
+                            <Node t={t} n={r.n} maps={maps} style={{ left: r.x, top: r.y }} dim={!(vis(t) || t.subs.some(vis))} sel={sel === t.id} pickable={Boolean(mode)} readOnly={readOnly}
+                                onMoveTo={editable ? A.reorder : undefined} onOpen={A.open} onToggle={A.toggle} onGoRef={A.goRef}
+                                tools={editable ? { addBelow: A.addBelow, addSide: A.addSide, startLink: A.startLink } : null} />
+                            {g && <Gate t={t} onToggle={A.toggleGate} style={{ left: g.x, top: g.y, width: g.w }} />}
+                            {t.subs.map(s => {
+                                const sr = L.subs.get(s.id)
+                                if (!sr) return null
+                                return <Node key={s.id} t={s} maps={maps} style={{ left: sr.x, top: sr.y }} dim={!vis(s)} sel={sel === s.id} readOnly={readOnly} onMoveTo={editable ? A.reorder : undefined} onOpen={A.open} onToggle={A.toggle} onGoRef={A.goRef} />
+                            })}
+                            {editable && ad && <button className="rm-addsub" style={{ left: ad.x, top: ad.y, width: ad.w }} onClick={() => A.addSub(t)}>+ Subtopic</button>}
+                        </Fragment>
+                    )
+                })}
+
+                {editable && conn && connMid && (
+                    <button className="rm-cx" style={{ left: connMid.x, top: connMid.y }} onClick={() => { A.removeConn(conn.id); setSelConn(null) }}>✕ Remove connection</button>
+                )}
+            </div>
+
+            {mode && (
+                <div className="rm-banner" role="status">
+                    <span>{mode.kind === 'side' ? 'Side topic: click the topic it should branch from' : mode.from ? 'Connect: now click the topic it leads to' : 'Connect: click the topic to start from'}</span>
+                    <button className="btn sm" onClick={A.cancelMode}>Cancel (Esc)</button>
+                </div>
+            )}
+            <div className="rm-zoombar" role="toolbar" aria-label="Zoom and view">
+                <button onClick={() => zoomCenter(1 / 1.25)} title="Zoom out (-)" aria-label="Zoom out">−</button>
+                <button className="rm-zl" onClick={actual} title="Back to 100 % (1)" aria-label="Reset zoom to 100 percent"><span ref={labelRef} /></button>
+                <button onClick={() => zoomCenter(1.25)} title="Zoom in (+)" aria-label="Zoom in">＋</button>
+                <button onClick={fit} title="Fit the whole roadmap on screen (0)">Fit</button>
+                {editable && <button onClick={() => setWheel(wheel === 'zoom' ? 'pan' : 'zoom')} aria-pressed={wheel === 'pan'} title="What the mouse wheel does. Ctrl + wheel always zooms.">Wheel: {wheel === 'zoom' ? 'zoom' : 'move'}</button>}
+                <button onClick={() => setFull(!full)} aria-pressed={full} title={full ? 'Leave full screen (Esc)' : 'Full screen'} aria-label={full ? 'Leave full screen' : 'Full screen'}>{full ? '⤡' : '⤢'}</button>
+            </div>
+            <p className="rm-hint" aria-hidden="true">{wheel === 'zoom' ? 'Scroll: zoom' : 'Scroll: move · Ctrl + scroll: zoom'} · Drag or hold Space + drag: move</p>
         </div>
     )
 }
@@ -547,6 +918,34 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                 </section>
             )}
 
+            {!p && (
+                <section>
+                    <h3>Branches and connections</h3>
+                    <p className="muted small" style={{ margin: '2px 0 8px' }}>Add the next topic under this one, or a side topic beside it. A connection links this topic to any other topic, even in another thread.</p>
+                    <div className="row">
+                        <button className="btn sm" onClick={() => api.addBelow(t.id)}>+ Topic below</button>
+                        <button className="btn sm" onClick={() => api.addSide(t.id)}>+ Side topic</button>
+                    </div>
+                    {data.conns.filter(c => c.from === t.id || c.to === t.id).map(c => {
+                        const other = data.topics.find(x => x.id === (c.from === t.id ? c.to : c.from))
+                        return (
+                            <div key={c.id} className="rm-it" style={{ marginTop: 8, alignItems: 'center' }}>
+                                <span className="grow small">{c.from === t.id ? '→ leads to' : '← comes from'} <b>{other ? other.title || 'Untitled' : '?'}</b></span>
+                                <button className="icon-btn" onClick={() => api.removeConn(c.id)} title="Remove connection" aria-label="Remove connection">×</button>
+                            </div>
+                        )
+                    })}
+                    <select value="" aria-label="Connect to another topic" style={{ marginTop: 8 }} onChange={e => { if (e.target.value) api.addConn(t.id, e.target.value) }}>
+                        <option value="">Connect this topic to…</option>
+                        {data.threads.map(th => (
+                            <optgroup key={th.id} label={th.title || 'Untitled thread'}>
+                                {data.topics.filter(x => x.id !== t.id && (data.lanes.find(l => l.id === x.lane) || {}).thread === th.id && !data.conns.some(c => c.from === t.id && c.to === x.id)).map(x => <option key={x.id} value={x.id}>{x.title || 'Untitled'}</option>)}
+                            </optgroup>
+                        ))}
+                    </select>
+                </section>
+            )}
+
             <section>
                 <h3>Resources</h3>
                 {t.res.map(x => (
@@ -685,9 +1084,12 @@ function BackupModal({ store, activeId, setRoadmaps, onClose }) {
 function NewRoadmapModal({ currentTitle, onCreate, onClose }) {
     const [title, setTitle] = useState('')
     const [template, setTemplate] = useState('blank')
+    const [count, setCount] = useState(1)
+    const [names, setNames] = useState(['', '', '', ''])
+    const threadNames = Array.from({ length: count }, (_, i) => names[i].trim() || (count === 1 ? 'Main path' : `Thread ${i + 1}`))
     return (
         <div className="modal-back" onMouseDown={e => e.target === e.currentTarget && onClose()}>
-            <form className="modal" role="dialog" aria-label="New roadmap" onSubmit={e => { e.preventDefault(); onCreate(title.trim(), template) }}>
+            <form className="modal" role="dialog" aria-label="New roadmap" onSubmit={e => { e.preventDefault(); onCreate(title.trim(), template, threadNames) }}>
                 <h2>New roadmap</h2>
                 <label className="field"><span>Name</span>
                     <input autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="Python, DevOps, Data science…" />
@@ -695,11 +1097,25 @@ function NewRoadmapModal({ currentTitle, onCreate, onClose }) {
                 <div className="field"><span>Start from</span>
                     <div className="row">
                         <button type="button" className={'btn sm' + (template === 'blank' ? ' on' : '')} onClick={() => setTemplate('blank')}>Empty roadmap</button>
-                        <button type="button" className={'btn sm' + (template === 'copy' ? ' on' : '')} onClick={() => setTemplate('copy')}>Copy of “{currentTitle || 'this roadmap'}”</button>
+                        <button type="button" className={'btn sm' + (template === 'copy' ? ' on' : '')} onClick={() => setTemplate('copy')}>Copy of “{currentTitle || 'this roadmap'}” (with its threads)</button>
                     </div>
                 </div>
+                {template === 'blank' && (
+                    <div className="field"><span>Threads: parallel paths that sit side by side</span>
+                        <div className="row">
+                            {[1, 2, 3, 4].map(n => <button key={n} type="button" className={'btn sm' + (count === n ? ' on' : '')} aria-pressed={count === n} onClick={() => setCount(n)}>{n}</button>)}
+                        </div>
+                        {Array.from({ length: count }, (_, i) => (
+                            <input key={i} style={{ marginTop: 6 }} value={names[i]} maxLength={60} aria-label={`Name of thread ${i + 1}`} placeholder={count === 1 ? 'Main path' : `Thread ${i + 1} (for example Frontend)`}
+                                onChange={e => setNames(cur => cur.map((x, j) => (j === i ? e.target.value : x)))} />
+                        ))}
+                    </div>
+                )}
+                <p className="muted small" style={{ margin: '4px 0 10px' }}>
+                    After creating it: hover a topic and use <b>＋↓</b> to add the next topic, <b>＋→</b> for a side topic beside it, and <b>🔗</b> to connect it to any other topic, even in another thread.
+                    The same actions are in the toolbar (<b>+ Thread</b>, <b>+ Side topic</b>, <b>Connect</b>).
+                </p>
                 <div className="row"><span className="grow" /><button type="button" className="btn" onClick={onClose}>Cancel</button><button type="submit" className="btn primary">Create roadmap</button></div>
-            
             </form>
         </div>
     )
@@ -753,10 +1169,17 @@ export default function Roadmap() {
     const [trail, setTrail] = useState([]) // roadmaps we came from when following a link
     const menuBtn = useRef(null)
     const prevPct = useRef(null)
+    const canvasApi = useRef(null)
+    const [mode, setMode] = useState(null) // null | { kind: 'side' | 'link', from }
+    const [full, setFull] = useState(false)
 
     const maps = store.maps
     const activeId = maps[store.active] ? store.active : store.order[0]
-    const data = maps[activeId] || { id: '', title: '', topics: [] }
+    const rawData = maps[activeId] || { id: '', title: '', topics: [] }
+    // A roadmap saved before threads existed is repaired on the fly (and saved properly on the first edit)
+    const data = useMemo(() => (rawData.id && structureOk(rawData) ? rawData : ensureStructure(structuredClone(rawData))), [rawData])
+    const wheel = settings.roadmapWheel === 'pan' ? 'pan' : 'zoom'
+    const setWheel = v => updateSettings(d => { d.roadmapWheel = v })
 
     // Copies for other accounts (see RoadmapShare.jsx). Links to other roadmaps are cut, because those roadmaps do not exist for the receiver.
     const cutLinks = m => {
@@ -767,7 +1190,7 @@ export default function Roadmap() {
     const importShared = (raw, keepProgress) => {
         if (!raw || !Array.isArray(raw.topics)) throw new Error('This share does not contain a roadmap.')
         const copy = cutLinks(JSON.parse(JSON.stringify(normMap({ ...raw, id: uid() }))))
-        reid(copy) // new ids everywhere, so the copy never touches the original
+        reidMap(copy) // new ids everywhere (and the links between them), so the copy never touches the original
         if (!keepProgress) {
             copy.topics.forEach(t => {
                 ;[t, ...t.subs].forEach(x => {
@@ -794,8 +1217,12 @@ export default function Roadmap() {
     // Edit the roadmap that is open
     const update = fn => updateStore(d => {
         const m = d.maps[activeId]
-        if (m) fn(m)
+        if (m) {
+            ensureStructure(m)
+            fn(m)
+        }
     })
+    const focusSoon = id => setTimeout(() => canvasApi.current && canvasApi.current.focusNode(id, { drawer: true }), 70)
 
     /* ----- mutations (updaters use block bodies so they never return a value) ----- */
     const api = {
@@ -886,6 +1313,17 @@ export default function Roadmap() {
             update(d => {
                 const h = locate(d, id)
                 if (!h) return
+                if (!h.p) {
+                    // a topic only moves within its own path
+                    const peers = d.topics.filter(x => x.lane === h.t.lane)
+                    const other = peers[peers.indexOf(h.t) + dir]
+                    if (!other) return
+                    const a = d.topics.indexOf(h.t)
+                    const b = d.topics.indexOf(other)
+                    d.topics[a] = other
+                    d.topics[b] = h.t
+                    return
+                }
                 const i = h.arr.indexOf(h.t)
                 const j = i + dir
                 if (j < 0 || j >= h.arr.length) return
@@ -907,7 +1345,9 @@ export default function Roadmap() {
         remove: id => {
             update(d => {
                 const h = locate(d, id)
-                if (h) h.arr.splice(h.arr.indexOf(h.t), 1)
+                if (!h) return
+                if (h.p) h.arr.splice(h.arr.indexOf(h.t), 1)
+                else dropTopic(d, id)
             })
             play('delete')
         },
@@ -916,12 +1356,110 @@ export default function Roadmap() {
             update(d => {
                 const a = locate(d, fromId)
                 const b = locate(d, toId)
-                if (!a || !b || a.arr !== b.arr) return
+                if (!a || !b || a.arr !== b.arr || (!a.p && a.t.lane !== b.t.lane)) return
                 const i = a.arr.indexOf(a.t)
                 const j = a.arr.indexOf(b.t)
                 a.arr.splice(j, 0, a.arr.splice(i, 1)[0])
             })
             play('move')
+        },
+        // A new topic right under another one, on the same path
+        addBelow: id => {
+            const t = norm({})
+            update(d => {
+                const i = d.topics.findIndex(x => x.id === id)
+                if (i < 0) return
+                t.lane = d.topics[i].lane
+                d.topics.splice(i + 1, 0, t)
+            })
+            play('add')
+            setSel(t.id)
+            focusSoon(t.id)
+        },
+        // A new topic beside another one, starting a side path (like Node.js beside TypeScript)
+        addSide: id => {
+            const t = norm({})
+            const lane = { id: uid(), thread: '', from: id }
+            update(d => {
+                const p = d.topics.find(x => x.id === id)
+                if (!p) return
+                const pl = d.lanes.find(l => l.id === p.lane)
+                lane.thread = pl ? pl.thread : d.threads[0].id
+                t.lane = lane.id
+                d.lanes.push(lane)
+                d.topics.push(t)
+            })
+            play('branch')
+            setSel(t.id)
+            focusSoon(t.id)
+        },
+        // A new topic at the end of the main path of a thread
+        addTopicTo: threadId => {
+            const t = norm({})
+            update(d => {
+                const lane = d.lanes.find(l => l.thread === threadId && !l.from) || d.lanes[0]
+                t.lane = lane.id
+                d.topics.push(t)
+            })
+            play('add')
+            setSel(t.id)
+            focusSoon(t.id)
+        },
+        addThread: () => {
+            const th = { id: uid(), title: `Thread ${data.threads.length + 1}` }
+            const t = norm({})
+            update(d => {
+                const lane = { id: uid(), thread: th.id, from: null }
+                d.threads.push(th)
+                d.lanes.push(lane)
+                t.lane = lane.id
+                d.topics.push(t)
+            })
+            play('thread')
+            setSel(t.id)
+            focusSoon(t.id)
+        },
+        renameThread: (id, title) => update(d => {
+            const th = d.threads.find(x => x.id === id)
+            if (th) th.title = title
+        }),
+        moveThread: (id, dir) => {
+            update(d => {
+                const i = d.threads.findIndex(x => x.id === id)
+                const j = i + dir
+                if (i < 0 || j < 0 || j >= d.threads.length) return
+                d.threads.splice(j, 0, d.threads.splice(i, 1)[0])
+            })
+            play('move')
+        },
+        // Deletes a thread with all its paths, topics and the connections that touched them
+        deleteThread: id => {
+            if (data.threads.length < 2) return
+            const gone = new Set(data.topics.filter(t => (data.lanes.find(l => l.id === t.lane) || {}).thread === id).map(t => t.id))
+            update(d => {
+                const lanes = new Set(d.lanes.filter(l => l.thread === id).map(l => l.id))
+                d.topics = d.topics.filter(t => !lanes.has(t.lane))
+                d.lanes = d.lanes.filter(l => !lanes.has(l.id))
+                d.threads = d.threads.filter(x => x.id !== id)
+                d.conns = d.conns.filter(c => !gone.has(c.from) && !gone.has(c.to))
+            })
+            if (sel && (gone.has(sel) || data.topics.some(t => gone.has(t.id) && t.subs.some(s => s.id === sel)))) setSel(null)
+            play('delete')
+        },
+        // A free connection from one topic to another (any thread). Returns true when it was made.
+        addConn: (from, to) => {
+            if (!from || !to || from === to) return false
+            if (data.conns.some(c => c.from === from && c.to === to)) {
+                notify({ title: 'Already connected', body: 'These two topics are already connected in this direction.', icon: '🔗' })
+                return false
+            }
+            update(d => { d.conns.push({ id: uid(), from, to }) })
+            play('connect')
+            return true
+        },
+        removeConn: id => {
+            update(d => { d.conns = d.conns.filter(c => c.id !== id) })
+            play('unlink')
         },
     }
 
@@ -940,16 +1478,48 @@ export default function Roadmap() {
         api.patchGate(t.id, { done: !t.gate.done })
         play(t.gate.done ? 'uncheck' : 'gate')
     }
-    const openItem = id => setSel(id)
+    // "Side topic" and "Connect" are two-click tools: the next click on a topic is used by the tool, not opened
+    const pick = id => {
+        if (!data.topics.some(x => x.id === id)) {
+            notify({ title: 'Pick a main topic', body: 'Subtopics cannot start a branch or a connection.', icon: '☝️' })
+            return
+        }
+        if (mode.kind === 'side') {
+            setMode(null)
+            api.addSide(id)
+        } else if (!mode.from) {
+            setMode({ kind: 'link', from: id })
+            play('pick')
+        } else if (mode.from === id) {
+            setMode(null)
+        } else {
+            api.addConn(mode.from, id)
+            setMode(null)
+        }
+    }
+    const openItem = id => (mode ? pick(id) : setSel(id))
+    const toggleMode = kind => {
+        if (mode && mode.kind === kind) return setMode(null)
+        setMode({ kind, from: null })
+        setSel(null)
+        play('pick')
+    }
+    const startLink = id => {
+        setMode({ kind: 'link', from: id })
+        setSel(null)
+        play('pick')
+    }
+    // Adds a topic at the end of the path of the selected topic, or of the first thread when nothing is selected
     const addTopic = () => {
+        const h = sel ? locate(data, sel) : null
         const t = norm({})
-        update(d => { d.topics.push(t) })
+        update(d => {
+            t.lane = h ? (h.p || h.t).lane : (d.lanes.find(l => !l.from && l.thread === d.threads[0].id) || d.lanes[0]).id
+            d.topics.push(t)
+        })
         play('add')
         setSel(t.id)
-        setTimeout(() => {
-            const el = document.getElementById('rm-n-' + t.id)
-            if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-        }, 50)
+        focusSoon(t.id)
     }
     const addSub = topic => {
         const s = norm({ priority: 'rec' }, false)
@@ -975,10 +1545,10 @@ export default function Roadmap() {
         setSel(null)
         window.scrollTo({ top: 0, behavior: 'smooth' })
     }
-    const createRoadmap = (title, template) => {
+    const createRoadmap = (title, template, threadNames = []) => {
         const id = uid()
-        const base = template === 'copy' ? JSON.parse(JSON.stringify(data)) : { topics: [] }
-        reid(base)
+        const base = template === 'copy' ? JSON.parse(JSON.stringify(data)) : { topics: [], threads: threadNames.map(n => ({ id: uid(), title: n })) }
+        reidMap(base)
         updateStore(d => {
             d.maps[id] = normMap({ ...base, id, title: title || (template === 'copy' ? `${data.title} (copy)` : 'New roadmap') })
             d.order.push(id)
@@ -1086,6 +1656,13 @@ export default function Roadmap() {
         return () => window.removeEventListener('keydown', onKey)
     })
 
+    // Save every roadmap in the new structure once. It must run after the undo effect above, so it is not an undo step.
+    useEffect(() => {
+        if (!store.order.some(id => maps[id] && !structureOk(maps[id]))) return
+        restoring.current = true
+        updateStore(d => { Object.values(d.maps).forEach(m => ensureStructure(m)) })
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
     const exportMarkdown = () => {
         const a = document.createElement('a')
         a.href = URL.createObjectURL(new Blob([toMarkdown(data, maps)], { type: 'text/markdown' }))
@@ -1106,11 +1683,10 @@ export default function Roadmap() {
     const pct = all.length ? Math.round((100 * doneCount) / all.length) : 0
 
     const goNext = () => {
-        const left = all.filter(t => st(t) !== 'done')
+        const left = readingOrder(data).flatMap(x => [x.t, ...x.t.subs]).filter(t => st(t) !== 'done')
         const t = left.find(x => x.priority === 'must') || left[0]
         if (!t) return notify({ title: 'Everything is done', body: 'Add a new topic to keep going.', icon: '🏆' })
-        const el = document.getElementById('rm-n-' + t.id)
-        if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        if (canvasApi.current) canvasApi.current.focusNode(t.id)
         notify({ title: 'Next up', body: t.title || 'Untitled', icon: '🎯' })
     }
 
@@ -1132,16 +1708,23 @@ export default function Roadmap() {
         })
     }, [store]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    const { mapRef, rowsRef, mainSvg, subSvg } = useConnectors(data, st, hideSubs)
-
+    // Esc: cancel a tool first, then close the panel, then leave full screen
     useEffect(() => {
-        if (!sel) return
         const onKey = e => {
-            if (e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('.modal-back')) setSel(null)
+            if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('.modal-back')) return
+            if (mode) setMode(null)
+            else if (sel) setSel(null)
+            else if (full) setFull(false)
         }
         window.addEventListener('keydown', onKey)
         return () => window.removeEventListener('keydown', onKey)
-    }, [sel])
+    }, [sel, mode, full])
+
+    const canvasActs = {
+        open: openItem, toggle: toggleDone, toggleGate, goRef: id => goRoadmap(id, true), reorder: api.reorder, addSub,
+        addBelow: api.addBelow, addSide: api.addSide, startLink, removeConn: api.removeConn, renameThread: api.renameThread,
+        moveThread: api.moveThread, deleteThread: api.deleteThread, addThreadTopic: api.addTopicTo, cancelMode: () => setMode(null),
+    }
 
     const lastFrom = trail.length ? maps[trail[trail.length - 1]] : null
 
@@ -1196,7 +1779,10 @@ export default function Roadmap() {
                     <button className="btn" onClick={redo} disabled={!hist.r} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
                     <button className="btn" onClick={goNext} title="Jump to the next unfinished topic">Continue</button>
                     <button className="btn" onClick={() => setHideSubs(!hideSubs)}>{hideSubs ? 'Show subtopics' : 'Hide subtopics'}</button>
-                    <button className="btn primary" onClick={addTopic}>Add topic</button>
+                    <button className="btn primary" onClick={addTopic} title="Add a topic at the end of the selected topic's path (or the first thread)">Add topic</button>
+                    <button className="btn" onClick={api.addThread} title="Add a new parallel thread next to the others">+ Thread</button>
+                    <button className={'btn' + (mode && mode.kind === 'side' ? ' on' : '')} aria-pressed={Boolean(mode && mode.kind === 'side')} onClick={() => toggleMode('side')} title="Click a topic to start a side topic beside it">+ Side topic</button>
+                    <button className={'btn' + (mode && mode.kind === 'link' ? ' on' : '')} aria-pressed={Boolean(mode && mode.kind === 'link')} onClick={() => toggleMode('link')} title="Connect two topics, even in different threads">🔗 Connect</button>
                     <button className="btn" onClick={() => setBackup(true)}>Backup</button>
                     <button className="btn" onClick={() => setSharing(true)} title="Give a copy of this roadmap to another account">Share</button>
                 </div>
@@ -1225,25 +1811,7 @@ export default function Roadmap() {
                 </div>
             </div>
 
-            <div className={'rm-map' + (hideSubs ? ' nosub' : '')} ref={mapRef}>
-                <svg className="rm-ov" ref={mainSvg} aria-hidden="true" />
-                <svg className="rm-ov" ref={subSvg} aria-hidden="true" />
-                <div className="rm-rows" ref={rowsRef}>
-                    {data.topics.length === 0 && <p className="muted" style={{ textAlign: 'center', padding: '60px 0' }}>No topics yet. Add your first topic to start the path.</p>}
-                    {data.topics.map((t, i) => (
-                        <div key={t.id} id={'rm-r-' + t.id} className={'rm-row ' + (i % 2 ? 'r' : 'l')}>
-                            <div className="rm-cell">
-                                <Node t={t} n={i + 1} maps={maps} dim={!(vis(t) || t.subs.some(vis))} onMoveTo={api.reorder} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />
-                                {t.gate && <Gate t={t} onToggle={toggleGate} />}
-                            </div>
-                            <div className="rm-subs">
-                                {t.subs.map(s => <Node key={s.id} t={s} maps={maps} dim={!vis(s)} onMoveTo={api.reorder} onOpen={openItem} onToggle={toggleDone} onGoRef={id => goRoadmap(id, true)} />)}
-                                <button className="rm-addsub" onClick={() => addSub(t)}>+ Subtopic</button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
+            <Canvas data={data} maps={maps} st={st} vis={vis} hideSubs={hideSubs} readOnly={false} apiRef={canvasApi} wheel={wheel} setWheel={setWheel} full={full} setFull={setFull} mode={mode} sel={sel} acts={canvasActs} />
 
             {sel && <div className="rm-scrim" onClick={() => setSel(null)} />}
             <Drawer data={data} maps={maps} order={store.order} currentId={activeId} sel={sel} setSel={setSel} api={api} onOpenRoadmap={id => goRoadmap(id, true)} />
@@ -1259,20 +1827,18 @@ export default function Roadmap() {
     )
 }
 
-const noop = () => {}
-
-// What it does: shows a roadmap exactly like the Roadmap page (snake path, subtopics, gates, filling lines), read-only.
-// When to use it: for a roadmap snapshot a friend shared. It needs only the snapshot, not your store.
-export function RoadmapView({ data }) {
-    const maps = { [data.id]: data }
+// What it does: shows a roadmap exactly like the Roadmap page (threads, side topics, connections, gates, filling lines), read-only.
+// When to use it: for a roadmap snapshot a friend shared. It needs only the snapshot, not your store. Older snapshots (one path) still work.
+export function RoadmapView({ data: raw }) {
+    const data = useMemo(() => ensureStructure(structuredClone(raw)), [raw])
+    const maps = useMemo(() => ({ [data.id]: data }), [data])
+    const [full, setFull] = useState(false)
     const colors = { ...DEFAULT_COLORS, ...(data.colors || {}) }
     const st = t => effStatus(t, maps)
     const all = itemsOf(data)
     const doneCount = all.filter(t => st(t) === 'done').length
     const must = all.filter(t => t.priority === 'must')
     const pct = all.length ? Math.round((100 * doneCount) / all.length) : 0
-
-    const { mapRef, rowsRef, mainSvg, subSvg } = useConnectors(data, st)
 
     return (
         <div className="rm rm-view" style={{ '--c-must': colors.must, '--c-rec': colors.rec, '--c-nice': colors.nice, '--c-opt': colors.opt, '--c-adv': colors.adv }}>
@@ -1288,23 +1854,7 @@ export function RoadmapView({ data }) {
                     <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}{hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}</span>
                 </div>
             </div>
-            <div className="rm-map" ref={mapRef}>
-                <svg className="rm-ov" ref={mainSvg} aria-hidden="true" />
-                <svg className="rm-ov" ref={subSvg} aria-hidden="true" />
-                <div className="rm-rows" ref={rowsRef}>
-                    {data.topics.map((t, i) => (
-                        <div key={t.id} id={'rm-r-' + t.id} className={'rm-row ' + (i % 2 ? 'r' : 'l')}>
-                            <div className="rm-cell">
-                                <Node t={t} n={i + 1} maps={maps} dim={false} onOpen={noop} onToggle={noop} onGoRef={noop} readOnly />
-                                {t.gate && <Gate t={t} onToggle={noop} />}
-                            </div>
-                            <div className="rm-subs">
-                                {t.subs.map(s => <Node key={s.id} t={s} maps={maps} dim={false} onOpen={noop} onToggle={noop} onGoRef={noop} readOnly />)}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
+            <Canvas data={data} maps={maps} st={st} vis={() => true} hideSubs={false} readOnly apiRef={null} wheel="zoom" setWheel={noop} full={full} setFull={setFull} mode={null} sel={null} acts={null} />
         </div>
     )
 }
@@ -1336,16 +1886,10 @@ const CSS = `
 .rm-ch.act{box-shadow:0 0 0 2px var(--ac)}
 .rm-pg{flex:1 1 100%;display:flex;align-items:center;gap:12px}
 .rm-track{flex:1;height:8px;border-radius:9px;background:var(--ln);overflow:hidden}.rm-track i{display:block;height:100%;background:linear-gradient(90deg,var(--ok),color-mix(in srgb,var(--ok) 60%,#fff));transition:width .5s}
-.rm-map{position:relative;padding:44px 0 40px}
-.rm-ov{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 .rm-base{fill:none;stroke:var(--ln);stroke-width:3;stroke-dasharray:7 9;stroke-linecap:round}
 .rm-fill{fill:none;stroke:var(--ok);stroke-width:5;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;transition:stroke-dashoffset .8s ease;filter:drop-shadow(0 0 5px var(--ok))}.rm-fill.on{stroke-dashoffset:0}
 .rm-sl{fill:none;stroke:var(--ln);stroke-width:2;stroke-dasharray:4 5}.rm-sl.on{stroke:var(--ok);stroke-dasharray:none;stroke-width:2.5}
-.rm-rows{position:relative;display:flex;flex-direction:column;gap:70px}
-.rm-row{display:flex;align-items:flex-start;gap:56px}.rm-row.l{padding-left:2%}.rm-row.r{flex-direction:row-reverse;padding-right:2%}
-.rm-cell{width:230px;flex:none}
-.rm-subs{display:flex;flex-direction:column;gap:12px;padding-top:6px}.nosub .rm-subs{display:none}
-.rm-node{position:relative;width:230px;background:var(--sf);border:1.5px solid var(--mu);border-radius:8px;padding:10px 12px;transition:border-color .2s,background .2s,opacity .2s,transform .15s,box-shadow .2s}
+.rm-node{position:absolute;width:230px;background:var(--sf);border:1.5px solid var(--mu);border-radius:8px;padding:10px 12px;transition:border-color .2s,background .2s,opacity .2s,transform .15s,box-shadow .2s}
 .rm-node.s{width:170px;padding:8px 10px;border-radius:6px}
 /* every priority has its own colour: a tint inside, a coloured border, and a different border style as a second clue */
 .p-must{--pc:var(--c-must);border-width:2px;border-style:solid}
@@ -1374,7 +1918,6 @@ const CSS = `
 .rm-gr{display:flex;gap:12px;align-items:flex-start;margin-left:6px}.rm-gr b{font-size:12px}.rm-gr small{display:block;color:var(--mu);font-size:12px;line-height:1.35}
 .rm-dm{flex:none;width:16px;height:16px;transform:rotate(45deg);border:1.5px solid var(--mu);background:var(--sf);cursor:pointer;margin-top:4px;padding:0}
 .rm-dm.key{border:2px solid var(--ac);background:color-mix(in srgb,var(--ac) 20%,var(--sf))}.rm-dm.on{background:var(--ok);border-color:var(--ok)}
-.rm-addsub{width:170px;border:1.5px dashed var(--ln);border-radius:6px;background:none;color:var(--mu);padding:5px;cursor:pointer;font-size:13px}.rm-addsub:hover{border-color:var(--ac);color:var(--ac)}
 .rm-scrim{position:fixed;inset:0;background:rgba(8,10,20,.5);z-index:50}
 .rm-drawer{position:fixed;top:0;right:0;bottom:0;width:min(520px,100%);background:var(--sf);border-left:1px solid var(--ln);z-index:55;overflow:auto;padding:20px;transform:translateX(105%);transition:transform .25s;visibility:hidden}
 .rm-drawer.open{transform:none;visibility:visible}
@@ -1386,7 +1929,6 @@ const CSS = `
 .rm-md{background:var(--bg);border:1px solid var(--ln);border-radius:8px;padding:6px 16px;min-height:60px}.rm-md h4{margin:14px 0 4px;font-size:16px}.rm-md p{margin:8px 0}.rm-md li{display:list-item;margin-left:18px}.rm-md code{background:var(--ln);padding:1px 5px;border-radius:5px}
 .rm-link{color:var(--ac);text-decoration:none;font-weight:600;padding:6px 4px}
 .rm-gform{display:grid;gap:8px;margin-top:8px}
-@media(max-width:700px){.rm-row.l,.rm-row.r{flex-direction:column;gap:14px;padding:0}.rm-row.r{align-items:flex-end}.rm-subs{flex-direction:row;flex-wrap:wrap;padding:0}.rm-row.r .rm-subs{justify-content:flex-end}}
 .rm-vtitle{font:700 26px var(--head);flex:1 1 280px;margin:0}
 .rm-view .rm-chk:disabled{opacity:1;cursor:default}
 .rm-view .rm-body,.rm-view .rm-dm,.rm-view .rm-ch{cursor:default}
@@ -1397,4 +1939,59 @@ const CSS = `
 .rm-node.linked .rm-ic{right:60px}
 .rm-node.has-ic .rm-body b{padding-right:54px}
 .rm-node.linked.has-ic .rm-body b{padding-right:80px}
+/* ---- canvas (threads, side topics, connections, zoom and move) ---- */
+.rm-vp{position:relative;overflow:hidden;height:clamp(460px,calc(100vh - 340px),1200px);margin-top:14px;border:1px solid var(--ln);border-radius:12px;background-color:var(--bg);background-image:radial-gradient(circle,var(--ln) 1px,transparent 1.4px);background-size:24px 24px;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;outline:none}
+.rm-vp:focus-visible{box-shadow:0 0 0 2px var(--ac)}
+.rm-vp.panning{cursor:grabbing}.rm-vp.moding{cursor:crosshair}
+.rm-vp.pan-ready .rm-world>*{pointer-events:none}.rm-vp.pan-ready{cursor:grab}
+.rm-vp.full{position:fixed;inset:0;z-index:45;height:auto;margin:0;border-radius:0;border:0}
+.rm-world{position:absolute;left:0;top:0;transform-origin:0 0}
+.rm-world.anim{transition:transform .35s cubic-bezier(.2,.8,.2,1)}
+.rm-ov{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.rm-ar0{fill:var(--ac)}.rm-ar1{fill:var(--ok)}
+.rm-cn{fill:none;stroke:var(--ac);stroke-width:2.5;stroke-dasharray:9 6;stroke-linecap:round;opacity:.85;transition:stroke .3s}
+.rm-cn.on{stroke:var(--ok);opacity:1}.rm-cn.sel{stroke-width:4;opacity:1}
+.rm-chit{fill:none;stroke:transparent;stroke-width:18;pointer-events:stroke;cursor:pointer}
+.rm-cx{position:absolute;transform:translate(-50%,-50%);z-index:4;border:1.5px solid var(--bad);background:var(--sf);color:var(--bad);border-radius:8px;padding:4px 10px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;box-shadow:var(--shadow)}
+.rm-th{position:absolute;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 8px;padding:6px 12px 8px;border:2px solid var(--ac);border-radius:12px;background:color-mix(in srgb,var(--ac) 10%,var(--sf));box-shadow:var(--shadow)}
+.rm-thi{min-width:0;border:0!important;background:none!important;padding:2px 0!important;font:700 15px var(--head)!important;color:var(--tx);text-overflow:ellipsis}
+.rm-thi:focus{background:var(--sf2)!important}
+.rm-thp{font-size:12px;font-weight:700;color:var(--ac)}
+.rm-th>.rm-bar{grid-column:1/-1;margin:0}
+.rm-thb{position:absolute;top:-30px;right:0;display:none;gap:2px;background:var(--sf);border:1px solid var(--ln);border-radius:8px;padding:2px;z-index:3}
+.rm-th:hover .rm-thb,.rm-th:focus-within .rm-thb{display:flex}
+.rm-thb button,.rm-act button{border:0;background:none;color:var(--tx);border-radius:6px;padding:3px 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
+.rm-thb button:hover:not(:disabled),.rm-act button:hover{background:var(--sf2);color:var(--ac)}
+.rm-thb button:disabled{opacity:.35;cursor:not-allowed}.rm-thb .danger{color:var(--bad)}
+.rm-addfirst{position:absolute;left:0;width:100%;border:1.5px dashed var(--ln);border-radius:8px;background:none;color:var(--mu);padding:10px;cursor:pointer;font-size:13px}.rm-addfirst:hover{border-color:var(--ac);color:var(--ac)}
+.rm-node,.rm-th,.rm-addsub,.rm-addfirst,.rm-gate{box-sizing:border-box}
+.rm-node{position:absolute;height:132px;padding:8px 12px}
+.rm-node.s{height:50px;padding:6px 10px}
+.rm-node.sel{box-shadow:0 0 0 3px var(--ac)}
+.rm-node.pickable{cursor:crosshair}.rm-node.pickable:hover{box-shadow:0 0 0 3px var(--ac)}
+.rm-body{position:relative;height:100%;overflow:hidden;align-content:start;gap:2px}
+.rm-body b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:15px;line-height:1.2}
+.rm-node.s .rm-body b{-webkit-line-clamp:1;font-size:13px}
+.rm-body em{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rm-body small{-webkit-line-clamp:2;line-height:1.25}
+.rm-foot{display:flex;gap:8px;align-items:baseline;min-width:0;overflow:hidden;white-space:nowrap}
+.rm-foot .rm-ref{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.rm-body .rm-bar{position:absolute;left:0;right:0;bottom:0;margin:0}
+.rm-node.s .rm-body .rm-bar{display:none}
+.rm-node.s.linked .rm-body .rm-bar{display:block}
+.rm-drag{position:absolute;left:-1px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--mu);cursor:grab;opacity:0;padding:2px 0;line-height:1;z-index:2}
+.rm-node:hover>.rm-drag{opacity:.7}
+.rm-act{position:absolute;top:-17px;right:8px;display:none;gap:1px;background:var(--sf);border:1px solid var(--ln);border-radius:8px;padding:2px;z-index:3;box-shadow:var(--shadow)}
+.rm-node:hover>.rm-act,.rm-node:focus-within>.rm-act{display:flex}
+.rm-vp.moding .rm-act{display:none!important}
+.rm-gate{position:absolute;height:54px}
+.rm-addsub{position:absolute;height:34px;border:1.5px dashed var(--ln);border-radius:6px;background:none;color:var(--mu);padding:5px;cursor:pointer;font-size:13px}.rm-addsub:hover{border-color:var(--ac);color:var(--ac)}
+.rm-zoombar{position:absolute;left:12px;bottom:12px;z-index:6;display:flex;gap:2px;align-items:center;background:var(--sf);border:1px solid var(--ln);border-radius:10px;padding:3px;box-shadow:var(--shadow)}
+.rm-zoombar button{border:0;background:none;color:var(--tx);border-radius:7px;padding:5px 10px;font-size:13px;font-weight:600;cursor:pointer;min-width:30px}
+.rm-zoombar button:hover{background:var(--sf2)}.rm-zoombar button[aria-pressed=true]{background:color-mix(in srgb,var(--ac) 18%,var(--sf));color:var(--ac)}
+.rm-zl{min-width:54px!important;font-variant-numeric:tabular-nums}
+.rm-banner{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:6;display:flex;gap:12px;align-items:center;background:var(--sf);border:1.5px solid var(--ac);border-radius:10px;padding:6px 8px 6px 14px;box-shadow:var(--shadow);font-size:13px;max-width:calc(100% - 24px)}
+.rm-hint{position:absolute;right:14px;bottom:10px;margin:0;font-size:11px;color:var(--mu);pointer-events:none;opacity:.8;text-align:right}
+@media(prefers-reduced-motion:reduce){.rm-world.anim{transition:none}}
+@media(max-width:700px){.rm{padding:14px 10px 100px}.rm-vp{height:calc(100vh - 260px)}.rm-hint{display:none}.rm-zoombar button{padding:5px 7px}}
 `
