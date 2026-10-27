@@ -371,9 +371,9 @@ function Gate({ t, onToggle, style }) {
 /*
    What it does: draws a roadmap as a tree you can zoom and move around, like a design tool.
    - The canvas is as tall as the roadmap, so the normal mouse wheel just scrolls the page. Ctrl + wheel (or a pinch) zooms.
-   - Drag the empty background, or hold Space and drag anywhere, or drag with the middle mouse button, to move sideways.
+   - Drag the empty background, or hold Space and drag anywhere, or drag with the middle mouse button, to move in every direction.
    - Left and right arrows move, + and - zoom, 0 fits the width, 1 goes back to 100 % (when the canvas has focus).
-   - In full screen the canvas has a fixed size, so the wheel moves it up and down and dragging moves it in every direction.
+   - In full screen the canvas has a fixed size, so the wheel also moves it up and down.
    Positions come from layoutMap() (fixed box sizes), so nothing is measured from the page.
    The zoom and move are applied straight to the element (not through React state), so they stay smooth on big roadmaps.
    Props: data (a repaired roadmap), maps, st(item), vis(item), hideSubs, readOnly, apiRef (receives { focusNode, fit }),
@@ -410,15 +410,17 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
         return { w: r.width, h: r.height, left: r.left, top: r.top }
     }
     // Writes the view straight to the page (no React state), so zoom and move stay smooth.
-    // Outside full screen the canvas is exactly as tall as the roadmap at this zoom, and the vertical offset never changes.
+    // Outside full screen the canvas is exactly as tall as the roadmap at this zoom.
     const apply = (animate = false) => {
         const w = worldRef.current
         const vp = vpRef.current
         if (!w || !vp) return
         const v = view.current
         const { L: lay, full: isFull } = latest.current
-        if (!isFull) v.y = PADY
-        vp.style.height = isFull ? '' : Math.max(MINH, Math.ceil(lay.height * v.k + PADY * 2)) + 'px'
+        const boxH = Math.max(MINH, Math.ceil(lay.height * v.k + PADY * 2))
+        vp.style.height = isFull ? '' : boxH + 'px'
+        // Dragging up and down is allowed, but the roadmap can never leave the canvas completely
+        if (!isFull) v.y = Math.min(boxH - 120, Math.max(120 - lay.height * v.k, v.y))
         w.classList.toggle('anim', animate)
         w.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.k})`
         vp.style.backgroundPosition = `${v.x}px ${v.y}px`
@@ -437,10 +439,11 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
         const k = clampK(v.k * factor)
         if (k === v.k) return
         const r = k / v.k
-        const wy = (cy - v.y) / v.k
-        view.current = { k, x: cx - (cx - v.x) * r, y: cy - (cy - v.y) * r }
+        const isFull = latest.current.full
+        // Outside full screen the top edge of the canvas stays put and the page scrolls instead (see below)
+        view.current = { k, x: cx - (cx - v.x) * r, y: isFull ? cy - (cy - v.y) * r : PADY + (v.y - PADY) * r }
         apply(animate)
-        if (!latest.current.full) window.scrollBy(0, wy * (k - v.k))
+        if (!isFull) window.scrollBy(0, (r - 1) * (cy - PADY))
     }
     const zoomCenter = factor => {
         const s = size()
@@ -666,7 +669,7 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
             </div>
         )}
         <div ref={vpRef} tabIndex={0} role="application" className={'rm-vp' + (mode ? ' moding' : '')}
-            aria-label="Roadmap canvas. Hold Control and scroll to zoom. Drag the background, or hold Space and drag, to move sideways. Left and right arrows move, plus and minus zoom, 0 fits the width."
+            aria-label="Roadmap canvas. Hold Control and scroll to zoom. Drag the background, or hold Space and drag, to move. Left and right arrows move, plus and minus zoom, 0 fits the width."
             onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerEnd} onPointerCancel={onPointerEnd} onKeyDown={onKeyDown}
             onMouseEnter={() => { hover.current = true }} onMouseLeave={() => { hover.current = false }}>
             <div className="rm-world" ref={worldRef} style={{ width: L.width, height: L.height }}>
@@ -769,7 +772,7 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
                 <button onClick={fit} title="Fit the roadmap to the width (0)">Fit</button>
                 <button onClick={() => setFull(!full)} aria-pressed={full} title={full ? 'Leave full screen (Esc)' : 'Full screen'} aria-label={full ? 'Leave full screen' : 'Full screen'}>{full ? '⤡' : '⤢'}</button>
             </div>
-            <p className="rm-hint" aria-hidden="true">Ctrl + scroll: zoom · Drag or hold Space + drag: move sideways</p>
+            <p className="rm-hint" aria-hidden="true">Ctrl + scroll: zoom · Drag or hold Space + drag: move</p>
         </div>
         </div>
     )
