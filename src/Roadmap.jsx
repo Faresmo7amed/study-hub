@@ -370,20 +370,22 @@ function Gate({ t, onToggle, style }) {
 /* ---------- the canvas ---------- */
 /*
    What it does: draws a roadmap as a tree you can zoom and move around, like a design tool.
-   - Scroll zooms (or moves, see the "Scroll" button). Ctrl + scroll and a trackpad pinch always zoom.
-   - Drag the empty background, or hold Space and drag anywhere, or drag with the middle mouse button, to move.
-   - Arrow keys move, + and - zoom, 0 fits everything, 1 goes back to 100 % (when the canvas has focus).
+   - The canvas is as tall as the roadmap, so the normal mouse wheel just scrolls the page. Ctrl + wheel (or a pinch) zooms.
+   - Drag the empty background, or hold Space and drag anywhere, or drag with the middle mouse button, to move sideways.
+   - Left and right arrows move, + and - zoom, 0 fits the width, 1 goes back to 100 % (when the canvas has focus).
+   - In full screen the canvas has a fixed size, so the wheel moves it up and down and dragging moves it in every direction.
    Positions come from layoutMap() (fixed box sizes), so nothing is measured from the page.
    The zoom and move are applied straight to the element (not through React state), so they stay smooth on big roadmaps.
    Props: data (a repaired roadmap), maps, st(item), vis(item), hideSubs, readOnly, apiRef (receives { focusNode, fit }),
-   wheel ('zoom' | 'pan'), setWheel, full, setFull, mode ({ kind, from } | null), sel (open item id), acts (handlers, null when read-only)
+   full, setFull, mode ({ kind, from } | null), sel (open item id), acts (handlers, null when read-only)
 */
 const typing = el => Boolean(el) && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
-const stepOf = k => Math.round(Math.log(k) / Math.log(1.25))
+const PADY = 20 // space above the roadmap inside the canvas
+const MINH = 360 // an almost empty roadmap still gets a usable canvas
 const NOACTS = { open: noop, toggle: noop, toggleGate: noop, goRef: noop }
 const ITEM = '.rm-node,.rm-gate,.rm-th,.rm-addsub,.rm-addfirst,.rm-zoombar,.rm-banner,.rm-cx,.rm-chit,button,input,select,textarea,a'
 
-function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWheel, full, setFull, mode, sel, acts }) {
+function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull, mode, sel, acts }) {
     const editable = !readOnly
     const A = acts || NOACTS
     const L = useMemo(() => layoutMap(data, { showSubs: !hideSubs, editable }), [data, hideSubs, editable])
@@ -397,8 +399,7 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
     const pinch = useRef(null)
     const space = useRef(false)
     const hover = useRef(false)
-    const lastStep = useRef(0)
-    const lastLimit = useRef(0)
+    const firstFull = useRef(true)
     const shownMap = useRef('')
     const [selConn, setSelConn] = useState(null)
     const [armedThread, setArmedThread] = useState(null)
@@ -406,13 +407,18 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
 
     const size = () => {
         const r = vpRef.current.getBoundingClientRect()
-        return { w: r.width, h: r.height, left: r.left }
+        return { w: r.width, h: r.height, left: r.left, top: r.top }
     }
+    // Writes the view straight to the page (no React state), so zoom and move stay smooth.
+    // Outside full screen the canvas is exactly as tall as the roadmap at this zoom, and the vertical offset never changes.
     const apply = (animate = false) => {
         const w = worldRef.current
         const vp = vpRef.current
         if (!w || !vp) return
         const v = view.current
+        const { L: lay, full: isFull } = latest.current
+        if (!isFull) v.y = PADY
+        vp.style.height = isFull ? '' : Math.max(MINH, Math.ceil(lay.height * v.k + PADY * 2)) + 'px'
         w.classList.toggle('anim', animate)
         w.style.transform = `translate(${v.x}px,${v.y}px) scale(${v.k})`
         vp.style.backgroundPosition = `${v.x}px ${v.y}px`
@@ -424,55 +430,54 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
         view.current.y += dy
         apply()
     }
-    // Zoom by a factor around a point of the canvas (cx, cy in pixels from its top-left corner)
+    // Zoom by a factor around a point of the canvas (cx, cy in pixels from its top-left corner).
+    // Outside full screen the page is scrolled by the same amount, so the point under the pointer stays under the pointer.
     const zoomAt = (factor, cx, cy, animate = false) => {
         const v = view.current
         const k = clampK(v.k * factor)
-        if (k === v.k) {
-            const now = Date.now()
-            if (now - lastLimit.current > 500) {
-                lastLimit.current = now
-                play('zoomlimit')
-            }
-            return
-        }
+        if (k === v.k) return
         const r = k / v.k
+        const wy = (cy - v.y) / v.k
         view.current = { k, x: cx - (cx - v.x) * r, y: cy - (cy - v.y) * r }
         apply(animate)
-        const s = stepOf(k)
-        if (s !== lastStep.current) {
-            play(s > lastStep.current ? 'zoomin' : 'zoomout')
-            lastStep.current = s
-        }
+        if (!latest.current.full) window.scrollBy(0, wy * (k - v.k))
     }
     const zoomCenter = factor => {
         const s = size()
-        zoomAt(factor, s.w / 2, s.h / 2, true)
+        const cy = latest.current.full ? s.h / 2 : Math.min(s.h, Math.max(0, window.innerHeight / 2 - s.top))
+        zoomAt(factor, s.w / 2, cy, true)
     }
     const fit = () => {
         const s = size()
-        view.current = fitView(latest.current.L, s.w, s.h)
-        lastStep.current = stepOf(view.current.k)
+        const lay = latest.current.L
+        view.current = latest.current.full ? fitView(lay, s.w, s.h) : { k: clampK(Math.min(1, (s.w - 80) / lay.width)), x: 0, y: PADY }
+        if (!latest.current.full) view.current.x = Math.max(20, (s.w - lay.width * view.current.k) / 2)
         apply(true)
-        play('fit')
     }
     const actual = () => zoomCenter(1 / view.current.k)
-    // Centre a topic (used after adding one, and by "Continue"). drawer: keep it clear of the side panel.
+    // Bring a topic into view (used after adding one, and by "Continue"). drawer: keep it clear of the side panel.
     const focusNode = (id, opts = {}) => {
-        const r = latest.current.L.nodes.get(id) || latest.current.L.subs.get(id)
+        const lay = latest.current.L
+        const r = lay.nodes.get(id) || lay.subs.get(id)
         if (!r || !vpRef.current) return
         const s = size()
         const room = opts.drawer ? Math.max(260, Math.min(s.w, window.innerWidth - 520 - s.left)) : s.w
         const v = view.current
-        const k = clampK(Math.min(1.2, Math.max(v.k, 0.7)))
-        view.current = { k, x: room / 2 - (r.x + r.w / 2) * k, y: s.h / 2 - (r.y + r.h / 2) * k }
-        lastStep.current = stepOf(k)
+        if (latest.current.full) {
+            const k = clampK(Math.min(1.2, Math.max(v.k, 0.7)))
+            view.current = { k, x: room / 2 - (r.x + r.w / 2) * k, y: s.h / 2 - (r.y + r.h / 2) * k }
+            apply(true)
+            return
+        }
+        view.current = { k: v.k, x: room / 2 - (r.x + r.w / 2) * v.k, y: PADY }
         apply(true)
+        const top = s.top + PADY + (r.y + r.h / 2) * v.k
+        window.scrollBy({ top: top - window.innerHeight / 2, behavior: 'smooth' })
     }
 
     // The listeners below are added once, so they read the newest functions from here
     useLayoutEffect(() => {
-        latest.current = { L, wheel, zoomAt, pan, zoomCenter, fit, actual, focusNode, apply }
+        latest.current = { L, full, zoomAt, pan, zoomCenter, fit, actual, focusNode, apply }
     })
     useLayoutEffect(() => {
         if (apiRef) apiRef.current = { focusNode: (id, o) => latest.current.focusNode(id, o), fit: () => latest.current.fit() }
@@ -483,24 +488,43 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
         if (shownMap.current === data.id) return
         shownMap.current = data.id
         view.current = startView(L, size().w)
-        lastStep.current = stepOf(view.current.k)
         apply()
     })
+    // The roadmap grew or shrank: the canvas height follows it
+    useLayoutEffect(() => { apply() }, [L]) // eslint-disable-line react-hooks/exhaustive-deps
+    // Entering or leaving full screen: show a sensible view for the new size
+    useLayoutEffect(() => {
+        if (firstFull.current) {
+            firstFull.current = false
+            return
+        }
+        if (full) vpRef.current.style.height = ''
+        const s = size()
+        view.current = full ? fitView(L, s.w, s.h) : startView(L, s.w)
+        apply()
+    }, [full]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Mouse wheel and trackpad pinch (needs a non-passive listener to stop the page from scrolling)
+    // Ctrl + wheel and trackpad pinch zoom. The plain wheel is left alone, so the page scrolls (the canvas is as tall as the roadmap).
+    // Needs a non-passive listener to be allowed to stop the browser from zooming the whole page.
     useEffect(() => {
         const el = vpRef.current
         const onWheel = e => {
-            e.preventDefault()
-            const { zoomAt: zoom, pan: move, wheel: mode2 } = latest.current
+            const { zoomAt: zoom, pan: move, full: isFull } = latest.current
             const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1
             const dx = e.deltaX * unit
             const dy = e.deltaY * unit
-            if (e.ctrlKey || e.metaKey || (mode2 === 'zoom' && !e.shiftKey)) {
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault()
                 const r = el.getBoundingClientRect()
-                zoom(Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top)
-            } else if (e.shiftKey) move(-(dx || dy), 0)
-            else move(-dx, -dy)
+                const pinch = Math.abs(dy) < 40 // a pinch sends many tiny steps, a mouse wheel sends big ones
+                zoom(Math.exp(-dy * (pinch ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top)
+            } else if (e.shiftKey || Math.abs(dx) > Math.abs(dy)) {
+                e.preventDefault()
+                move(-(dx || dy), 0)
+            } else if (isFull) {
+                e.preventDefault()
+                move(0, -dy)
+            }
         }
         el.addEventListener('wheel', onWheel, { passive: false })
         return () => el.removeEventListener('wheel', onWheel)
@@ -581,7 +605,6 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
     const onPointerEnd = e => {
         pointers.current.delete(e.pointerId)
         if (pointers.current.size < 2) pinch.current = null
-        lastStep.current = stepOf(view.current.k)
         if (!pointers.current.size) {
             drag.current = null
             vpRef.current.classList.remove('panning')
@@ -594,10 +617,11 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
         if (typing(e.target) || e.target.closest('button') || e.ctrlKey || e.metaKey || e.altKey) return
         const step = e.shiftKey ? 240 : 80
         const k = e.key
+        const isFull = latest.current.full
         if (k === 'ArrowLeft') pan(step, 0)
         else if (k === 'ArrowRight') pan(-step, 0)
-        else if (k === 'ArrowUp') pan(0, step)
-        else if (k === 'ArrowDown') pan(0, -step)
+        else if (k === 'ArrowUp' && isFull) pan(0, step)
+        else if (k === 'ArrowDown' && isFull) pan(0, -step)
         else if (k === '+' || k === '=') zoomCenter(1.25)
         else if (k === '-' || k === '_') zoomCenter(1 / 1.25)
         else if (k === '0') fit()
@@ -632,8 +656,17 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
     const connMid = conn && L.nodes.get(conn.from) && L.nodes.get(conn.to) ? connPath(L.nodes.get(conn.from), L.nodes.get(conn.to)).mid : null
 
     return (
-        <div ref={vpRef} tabIndex={0} role="application" className={'rm-vp' + (full ? ' full' : '') + (mode ? ' moding' : '')}
-            aria-label="Roadmap canvas. Scroll to zoom. Drag the background, or hold Space and drag, to move. Arrow keys move, plus and minus zoom, 0 fits everything."
+        <div className={'rm-cv' + (full ? ' full' : '')}>
+        {mode && (
+            <div className="rm-dock rm-dock-top">
+                <div className="rm-banner" role="status">
+                    <span>{mode.kind === 'side' ? 'Side topic: click the topic it should branch from' : mode.from ? 'Connect: now click the topic it leads to' : 'Connect: click the topic to start from'}</span>
+                    <button className="btn sm" onClick={A.cancelMode}>Cancel (Esc)</button>
+                </div>
+            </div>
+        )}
+        <div ref={vpRef} tabIndex={0} role="application" className={'rm-vp' + (mode ? ' moding' : '')}
+            aria-label="Roadmap canvas. Hold Control and scroll to zoom. Drag the background, or hold Space and drag, to move sideways. Left and right arrows move, plus and minus zoom, 0 fits the width."
             onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerEnd} onPointerCancel={onPointerEnd} onKeyDown={onKeyDown}
             onMouseEnter={() => { hover.current = true }} onMouseLeave={() => { hover.current = false }}>
             <div className="rm-world" ref={worldRef} style={{ width: L.width, height: L.height }}>
@@ -727,21 +760,17 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, wheel, setWhe
                 )}
             </div>
 
-            {mode && (
-                <div className="rm-banner" role="status">
-                    <span>{mode.kind === 'side' ? 'Side topic: click the topic it should branch from' : mode.from ? 'Connect: now click the topic it leads to' : 'Connect: click the topic to start from'}</span>
-                    <button className="btn sm" onClick={A.cancelMode}>Cancel (Esc)</button>
-                </div>
-            )}
+        </div>
+        <div className="rm-dock rm-dock-bot">
             <div className="rm-zoombar" role="toolbar" aria-label="Zoom and view">
                 <button onClick={() => zoomCenter(1 / 1.25)} title="Zoom out (-)" aria-label="Zoom out">−</button>
                 <button className="rm-zl" onClick={actual} title="Back to 100 % (1)" aria-label="Reset zoom to 100 percent"><span ref={labelRef} /></button>
                 <button onClick={() => zoomCenter(1.25)} title="Zoom in (+)" aria-label="Zoom in">＋</button>
-                <button onClick={fit} title="Fit the whole roadmap on screen (0)">Fit</button>
-                {editable && <button onClick={() => setWheel(wheel === 'zoom' ? 'pan' : 'zoom')} aria-pressed={wheel === 'pan'} title="What the mouse wheel does. Ctrl + wheel always zooms.">Wheel: {wheel === 'zoom' ? 'zoom' : 'move'}</button>}
+                <button onClick={fit} title="Fit the roadmap to the width (0)">Fit</button>
                 <button onClick={() => setFull(!full)} aria-pressed={full} title={full ? 'Leave full screen (Esc)' : 'Full screen'} aria-label={full ? 'Leave full screen' : 'Full screen'}>{full ? '⤡' : '⤢'}</button>
             </div>
-            <p className="rm-hint" aria-hidden="true">{wheel === 'zoom' ? 'Scroll: zoom' : 'Scroll: move · Ctrl + scroll: zoom'} · Drag or hold Space + drag: move</p>
+            <p className="rm-hint" aria-hidden="true">Ctrl + scroll: zoom · Drag or hold Space + drag: move sideways</p>
+        </div>
         </div>
     )
 }
@@ -904,7 +933,7 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                     <h3>Subtopics</h3>
                     {t.subs.map(x => (
                         <Row key={x.id} id={x.id} onRemove={() => api.removeIn(t.id, 'subs', x.id)}>
-                            <input type="checkbox" checked={effStatus(x, maps) === 'done'} disabled={!!(x.ref && maps[x.ref])} title={x.ref && maps[x.ref] ? 'Follows the linked roadmap' : undefined} aria-label="Done" onChange={e => { api.setStatus(x, e.target.checked ? 'done' : 'todo'); play(e.target.checked ? 'check' : 'uncheck') }} />
+                            <input type="checkbox" checked={effStatus(x, maps) === 'done'} disabled={!!(x.ref && maps[x.ref])} title={x.ref && maps[x.ref] ? 'Follows the linked roadmap' : undefined} aria-label="Done" onChange={e => { api.setStatus(x, e.target.checked ? 'done' : 'todo') }} />
                             <div className="col">
                                 <input type="text" value={x.title} placeholder="Subtopic title" aria-label="Subtopic title" onChange={e => api.patchItem(t.id, 'title', x, e.target.value, 'subs')} />
                                 <select value={x.priority} aria-label="Priority" onChange={e => api.patchItem(t.id, 'priority', x, e.target.value, 'subs')}>
@@ -1178,8 +1207,6 @@ export default function Roadmap() {
     const rawData = maps[activeId] || { id: '', title: '', topics: [] }
     // A roadmap saved before threads existed is repaired on the fly (and saved properly on the first edit)
     const data = useMemo(() => (rawData.id && structureOk(rawData) ? rawData : ensureStructure(structuredClone(rawData))), [rawData])
-    const wheel = settings.roadmapWheel === 'pan' ? 'pan' : 'zoom'
-    const setWheel = v => updateSettings(d => { d.roadmapWheel = v })
 
     // Copies for other accounts (see RoadmapShare.jsx). Links to other roadmaps are cut, because those roadmaps do not exist for the receiver.
     const cutLinks = m => {
@@ -1251,7 +1278,8 @@ export default function Roadmap() {
             play('tick')
         },
         // Change the status of an item. A mirrored subtopic writes to the topic it follows, so both roadmaps agree.
-        setStatus: (item, status) => updateStore(d => {
+        setStatus: (item, status) => {
+            updateStore(d => {
             const target = item.mirror && d.maps[item.mirror.map] && d.maps[item.mirror.map].topics.find(x => x.id === item.mirror.topic)
             const own = d.maps[activeId] && locate(d.maps[activeId], item.id)
             const h = target ? { t: target } : own
@@ -1259,7 +1287,10 @@ export default function Roadmap() {
                 h.t.status = status
                 h.t.doneAt = status === 'done' ? Date.now() : 0
             }
-        }),
+            })
+            // three different sounds: done, in progress, not started (checkbox and panel buttons both end up here)
+            play(status === 'done' ? 'statusdone' : status === 'doing' ? 'statuswip' : 'statustodo')
+        },
         // Turns an item into its own roadmap. Its subtopics become the topics of the new roadmap and stay
         // connected: ticking one in either roadmap ticks it in both, and the item shows the new roadmap's progress.
         makeRoadmap: id => {
@@ -1467,8 +1498,6 @@ export default function Roadmap() {
         if (t.ref && maps[t.ref]) return
         const done = st(t) !== 'done'
         api.setStatus(t, done ? 'done' : 'todo')
-        const isTopic = data.topics.some(x => x.id === t.id)
-        play(done ? (isTopic ? 'complete' : 'check') : 'uncheck')
         if (done && el) {
             const r = el.getBoundingClientRect()
             confetti(r.left + r.width / 2, r.top + r.height / 2)
@@ -1811,7 +1840,7 @@ export default function Roadmap() {
                 </div>
             </div>
 
-            <Canvas data={data} maps={maps} st={st} vis={vis} hideSubs={hideSubs} readOnly={false} apiRef={canvasApi} wheel={wheel} setWheel={setWheel} full={full} setFull={setFull} mode={mode} sel={sel} acts={canvasActs} />
+            <Canvas data={data} maps={maps} st={st} vis={vis} hideSubs={hideSubs} readOnly={false} apiRef={canvasApi} full={full} setFull={setFull} mode={mode} sel={sel} acts={canvasActs} />
 
             {sel && <div className="rm-scrim" onClick={() => setSel(null)} />}
             <Drawer data={data} maps={maps} order={store.order} currentId={activeId} sel={sel} setSel={setSel} api={api} onOpenRoadmap={id => goRoadmap(id, true)} />
@@ -1854,7 +1883,7 @@ export function RoadmapView({ data: raw }) {
                     <span className="small muted">{pct}% · {doneCount}/{all.length} items · mandatory {must.filter(t => st(t) === 'done').length}/{must.length}{hoursLeft(data.topics, st) > 0 ? ` · ~${Math.round(hoursLeft(data.topics, st))} h left` : ''}</span>
                 </div>
             </div>
-            <Canvas data={data} maps={maps} st={st} vis={() => true} hideSubs={false} readOnly apiRef={null} wheel="zoom" setWheel={noop} full={full} setFull={setFull} mode={null} sel={null} acts={null} />
+            <Canvas data={data} maps={maps} st={st} vis={() => true} hideSubs={false} readOnly apiRef={null} full={full} setFull={setFull} mode={null} sel={null} acts={null} />
         </div>
     )
 }
@@ -1940,11 +1969,16 @@ const CSS = `
 .rm-node.has-ic .rm-body b{padding-right:54px}
 .rm-node.linked.has-ic .rm-body b{padding-right:80px}
 /* ---- canvas (threads, side topics, connections, zoom and move) ---- */
-.rm-vp{position:relative;overflow:hidden;height:clamp(460px,calc(100vh - 340px),1200px);margin-top:14px;border:1px solid var(--ln);border-radius:12px;background-color:var(--bg);background-image:radial-gradient(circle,var(--ln) 1px,transparent 1.4px);background-size:24px 24px;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;outline:none}
+.rm-cv{position:relative;margin-top:14px}
+.rm-cv.full{position:fixed;inset:0;z-index:45;margin:0;background:var(--bg)}
+.rm-vp{position:relative;overflow:hidden;height:360px;border:1px solid var(--ln);border-radius:12px;background-color:var(--bg);background-image:radial-gradient(circle,var(--ln) 1px,transparent 1.4px);background-size:24px 24px;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;outline:none}
 .rm-vp:focus-visible{box-shadow:0 0 0 2px var(--ac)}
 .rm-vp.panning{cursor:grabbing}.rm-vp.moding{cursor:crosshair}
 .rm-vp.pan-ready .rm-world>*{pointer-events:none}.rm-vp.pan-ready{cursor:grab}
-.rm-vp.full{position:fixed;inset:0;z-index:45;height:auto;margin:0;border-radius:0;border:0}
+.rm-cv.full .rm-vp{height:100%;border-radius:0;border:0}
+.rm-dock{position:sticky;height:0;z-index:6;pointer-events:none}
+.rm-dock-bot{bottom:14px}.rm-dock-top{top:76px}
+.rm-cv.full .rm-dock{position:absolute;left:0;right:0}.rm-cv.full .rm-dock-bot{bottom:14px}.rm-cv.full .rm-dock-top{top:12px}
 .rm-world{position:absolute;left:0;top:0;transform-origin:0 0}
 .rm-world.anim{transition:transform .35s cubic-bezier(.2,.8,.2,1)}
 .rm-ov{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
@@ -1981,17 +2015,18 @@ const CSS = `
 .rm-node.s.linked .rm-body .rm-bar{display:block}
 .rm-drag{position:absolute;left:-1px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--mu);cursor:grab;opacity:0;padding:2px 0;line-height:1;z-index:2}
 .rm-node:hover>.rm-drag{opacity:.7}
+.rm-node>.rm-chk,.rm-node>.rm-go,.rm-node>.rm-ic{z-index:2}
 .rm-act{position:absolute;top:-17px;right:8px;display:none;gap:1px;background:var(--sf);border:1px solid var(--ln);border-radius:8px;padding:2px;z-index:3;box-shadow:var(--shadow)}
 .rm-node:hover>.rm-act,.rm-node:focus-within>.rm-act{display:flex}
 .rm-vp.moding .rm-act{display:none!important}
 .rm-gate{position:absolute;height:54px}
 .rm-addsub{position:absolute;height:34px;border:1.5px dashed var(--ln);border-radius:6px;background:none;color:var(--mu);padding:5px;cursor:pointer;font-size:13px}.rm-addsub:hover{border-color:var(--ac);color:var(--ac)}
-.rm-zoombar{position:absolute;left:12px;bottom:12px;z-index:6;display:flex;gap:2px;align-items:center;background:var(--sf);border:1px solid var(--ln);border-radius:10px;padding:3px;box-shadow:var(--shadow)}
+.rm-zoombar{position:absolute;left:12px;bottom:0;pointer-events:auto;display:flex;gap:2px;align-items:center;background:var(--sf);border:1px solid var(--ln);border-radius:10px;padding:3px;box-shadow:var(--shadow)}
 .rm-zoombar button{border:0;background:none;color:var(--tx);border-radius:7px;padding:5px 10px;font-size:13px;font-weight:600;cursor:pointer;min-width:30px}
 .rm-zoombar button:hover{background:var(--sf2)}.rm-zoombar button[aria-pressed=true]{background:color-mix(in srgb,var(--ac) 18%,var(--sf));color:var(--ac)}
 .rm-zl{min-width:54px!important;font-variant-numeric:tabular-nums}
-.rm-banner{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:6;display:flex;gap:12px;align-items:center;background:var(--sf);border:1.5px solid var(--ac);border-radius:10px;padding:6px 8px 6px 14px;box-shadow:var(--shadow);font-size:13px;max-width:calc(100% - 24px)}
-.rm-hint{position:absolute;right:14px;bottom:10px;margin:0;font-size:11px;color:var(--mu);pointer-events:none;opacity:.8;text-align:right}
+.rm-banner{position:absolute;top:0;left:50%;transform:translateX(-50%);pointer-events:auto;display:flex;gap:12px;align-items:center;background:var(--sf);border:1.5px solid var(--ac);border-radius:10px;padding:6px 8px 6px 14px;box-shadow:var(--shadow);font-size:13px;max-width:calc(100% - 24px)}
+.rm-hint{position:absolute;right:14px;bottom:0;margin:0;font-size:11px;color:var(--mu);pointer-events:none;opacity:.8;text-align:right}
 @media(prefers-reduced-motion:reduce){.rm-world.anim{transition:none}}
-@media(max-width:700px){.rm{padding:14px 10px 100px}.rm-vp{height:calc(100vh - 260px)}.rm-hint{display:none}.rm-zoombar button{padding:5px 7px}}
+@media(max-width:700px){.rm{padding:14px 10px 100px}.rm-hint{display:none}.rm-zoombar button{padding:5px 7px}}
 `

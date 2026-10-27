@@ -30,6 +30,9 @@ export const SOUND_INFO = {
     tick: { label: 'Small change', cat: 'edits' },
     pin: { label: 'Pin a note', cat: 'edits' },
     archive: { label: 'Archive', cat: 'edits' },
+    statusdone: { label: 'Mark as done', cat: 'items' },
+    statuswip: { label: 'Mark as in progress', cat: 'items' },
+    statustodo: { label: 'Mark as not started', cat: 'items' },
     complete: { label: 'Finish something big', cat: 'rewards' },
     goal: { label: 'Daily goal reached', cat: 'rewards' },
     streak: { label: 'Streak day', cat: 'rewards' },
@@ -46,10 +49,6 @@ export const SOUND_INFO = {
     friendon: { label: 'A friend starts studying', cat: 'study' },
     cheer: { label: 'A friend cheers you', cat: 'study' },
     groupgoal: { label: 'Group goal reached', cat: 'study' },
-    zoomin: { label: 'Zoom in', cat: 'map' },
-    zoomout: { label: 'Zoom out', cat: 'map' },
-    zoomlimit: { label: 'Zoom limit reached', cat: 'map' },
-    fit: { label: 'Fit roadmap to screen', cat: 'map' },
     pick: { label: 'Pick a topic to connect', cat: 'map' },
     connect: { label: 'Connect two topics', cat: 'map' },
     unlink: { label: 'Remove a connection', cat: 'map' },
@@ -110,6 +109,20 @@ const SOUNDS = {
     check() {
         tone(880, 0, 0.1, { type: 'triangle', gain: 0.2 })
         tone(1318.5, 0.07, 0.18, { type: 'triangle', gain: 0.2 })
+    },
+    statusdone() {
+        tone(784, 0, 0.09, { type: 'triangle', gain: 0.2 })
+        tone(1174.7, 0.08, 0.09, { type: 'triangle', gain: 0.2 })
+        tone(1568, 0.16, 0.3, { type: 'triangle', gain: 0.2 })
+        bell(2093, 0.18, 0.9, 0.08)
+    },
+    statuswip() {
+        tone(494, 0, 0.1, { type: 'sine', gain: 0.18 })
+        tone(659.25, 0.11, 0.2, { type: 'sine', gain: 0.18 })
+    },
+    statustodo() {
+        tone(330, 0, 0.14, { type: 'triangle', gain: 0.16, slideTo: 220 })
+        tone(147, 0.03, 0.14, { gain: 0.16, slideTo: 98 })
     },
     uncheck() {
         tone(520, 0, 0.12, { gain: 0.14, slideTo: 360 })
@@ -223,19 +236,6 @@ const SOUNDS = {
         bell(N.E6, 0.15, 1.4, 0.18)
         bell(N.G6, 0.3, 1.5, 0.18)
         bell(N.C7, 0.45, 1.8, 0.14)
-    },
-    zoomin() {
-        tone(620, 0, 0.05, { type: 'triangle', gain: 0.07, slideTo: 780 })
-    },
-    zoomout() {
-        tone(700, 0, 0.05, { type: 'triangle', gain: 0.07, slideTo: 540 })
-    },
-    zoomlimit() {
-        tone(190, 0, 0.1, { gain: 0.12, slideTo: 130 })
-    },
-    fit() {
-        tone(520, 0, 0.08, { type: 'triangle', gain: 0.11 })
-        tone(780, 0.07, 0.14, { type: 'triangle', gain: 0.11 })
     },
     pick() {
         tone(1040, 0, 0.05, { type: 'triangle', gain: 0.1 })

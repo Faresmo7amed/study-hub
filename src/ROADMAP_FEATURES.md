@@ -111,7 +111,7 @@ reaches(from, target)      depth-first search through links, with a visited set
 | Search | Matches title, description, notes and checklist text. Non-matching squares are dimmed, not hidden. |
 | Hide subtopics | A toggle for an overview of just the topics. |
 | Confetti | A burst from the checkbox when something is marked done. |
-| Sounds | Check, uncheck, finish a topic, pass a gate, add, delete, move, roadmap complete. Synthesised in the browser with the Web Audio API, so there are no audio files. They can be turned off globally. |
+| Sounds | Marking an item done, in progress or not started each plays its own sound (checkbox or side panel). Category "Roadmap map": pick, connect, unlink, side topic, thread. |
 | Accessibility | Every control has a label, toggles use `aria-pressed`, the panel is a dialog, the focus ring is visible, animations respect `prefers-reduced-motion`. |
 
 ## 7. The map drawing (how the snake and the lines work)
@@ -307,7 +307,7 @@ This replaces the left/right snake described in sections 2 and 7. Progress rules
 | Side topics | **+ Side topic** (or hover a topic and press ＋→, or the drawer button) starts a path to the right of a topic, for example Node.js beside TypeScript. A side path can have its own topics below it and its own side topics. |
 | Subtopics | Fan out to the left of their topic, 5 per column; the 6th starts a new column further left. |
 | Connections | **Connect** (or 🔗 on a topic, or the drawer list) links any topic to any other, across threads. Drawn as a dashed arrow, green once the source is done. Click a line to remove it. |
-| Zoom and move | Wheel zooms (button "Wheel: zoom / move" switches it; Ctrl + wheel and pinch always zoom). Drag the background, or hold **Space** and drag anywhere, or use the middle mouse button, to move. Keys when the canvas has focus: arrows move, + and - zoom, 0 fits, 1 is 100 %. Fit, 100 % and Full screen buttons. Range 15 % to 250 %. |
+| Zoom and move | The canvas is as tall as the roadmap, so the normal mouse wheel scrolls the page. **Ctrl + wheel** (or a trackpad pinch) zooms around the pointer, 15 % to 250 %. Drag the background, hold **Space** and drag anywhere, or use the middle mouse button, to move sideways. Keys when the canvas has focus: left/right move, + and - zoom, 0 fits the width, 1 is 100 %. The zoom bar (also Fit, 100 % and Full screen) stays at the bottom of the window. In full screen the canvas has a fixed size: the wheel moves it up and down and dragging moves it in every direction. There are no zoom sounds. |
 | Sounds | New category "Roadmap map": zoom steps, zoom limit, fit, pick, connect, unlink, side topic, thread. |
 
 Data (all optional on old roadmaps; `ensureStructure()` in `roadmapLayout.js` repairs them):
