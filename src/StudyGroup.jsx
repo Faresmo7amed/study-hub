@@ -7,6 +7,8 @@ import { HeatGrid, HeatLegend } from './Heatmap'
 import * as fb from './firebase'
 import { getSyncUser, useSyncState } from './sync'
 import { play } from './sound'
+import { cheer, useLive } from './live'
+import PresenceSidebar from './PresenceSidebar'
 
 /* eslint-disable react-refresh/only-export-components */
 /* ============================================================
@@ -28,7 +30,6 @@ const CHEERS = { clap: '👏', fire: '🔥', muscle: '💪' }
 const NUDGE = '👉'
 const HEAT_GROUP = [1, 60, 180, 360] // the same for the whole group, so the levels are higher
 const HEAT_MINUTES = [1, 30, 60, 120] // minutes of study where each green level of a friend's graph starts
-const COOLDOWN = 20000 // ms before you can cheer the same friend again
 // [key, label, hint, max length]
 const PROFILE_FIELDS = [
     ['focus', 'Studying', 'ITI prep, React, IELTS…', 60],
@@ -137,6 +138,7 @@ function publish(user, ids) {
             done: planned.filter(t => t.done).length, total: planned.length,
             week: weekKey, plan: planOf(week), streak: app.streak, best: app.best,
         },
+        seen: stamp.getTime(), // friends read this as "online"; live.js refreshes it every couple of minutes
         updatedAt: stamp.getTime(),
         profile: Object.fromEntries(Object.entries(s.profile || {}).filter(([, v]) => v)),
     }
@@ -257,19 +259,6 @@ export function stopSession(user) {
         notify({ title: 'Session saved', body: `${minutes} min added to today.`, icon: '📚' })
     }
     publish(user)
-}
-
-// What it does: sends a cheer to a friend, unless you cheered the same friend a few seconds ago.
-// When to use it: from the cheer buttons. "count" is how many cheers you already sent that friend.
-const lastCheer = {}
-function cheerFriend(groupId, uid, toUid, kind, count) {
-    const t = Date.now()
-    if (t - (lastCheer[toUid] || 0) < COOLDOWN) {
-        notify({ title: 'Easy there', body: 'Wait a few seconds before cheering the same friend again.', icon: '⏳' })
-        return
-    }
-    lastCheer[toUid] = t
-    fb.saveCheer(groupId, `${uid}_${toUid}`, { from: uid, to: toUid, kind, n: count + 1, at: t }).then(() => play('cheer')).catch(fail)
 }
 
 // What it does: saves one snapshot in the group, unless it is too big for one cloud document.
@@ -796,20 +785,18 @@ export default function StudyGroup() {
     const [period, setPeriod] = useState('today')
     const [adding, setAdding] = useState(false)
     const [editing, setEditing] = useState(false)
-    const [feed, setFeed] = useState({ id: '', list: EMPTY })
-    const seen = useRef(null)
+    const live = useLive()
     const rank = useRef(null)
     const [shareFeed, setShareFeed] = useState({ id: '', list: EMPTY })
     const [sharing, setSharing] = useState(false)
     const [viewing, setViewing] = useState(null)
     const seenShares = useRef(null)
     const [profileId, setProfileId] = useState(null)
-    const seenCheers = useRef(null)
     const seenSessions = useRef(null)
 
     const active = s.groups.find(g => g.id === s.active) || s.groups[0]
     const activeId = active ? active.id : ''
-    const members = feed.id === activeId ? feed.list : EMPTY
+    const members = live.members[activeId] || EMPTY // the live layer (live.js) keeps these current on every page
     const shares = shareFeed.id === activeId ? shareFeed.list : EMPTY
 
     // Shares made before auto-sync existed: register them so they stay up to date
@@ -853,21 +840,6 @@ export default function StudyGroup() {
             play('add')
         })
     }, [shareFeed]) // eslint-disable-line react-hooks/exhaustive-deps
-    // Live cards of the open group
-    useEffect(() => {
-        if (!activeId || !uid) return
-        let off = null
-        let dead = false
-        fb.watchMembers(activeId, list => setFeed({ id: activeId, list }), () => {}).then(stop => {
-            if (dead) stop()
-            else off = stop
-        }).catch(() => {})
-        return () => {
-            dead = true
-            if (off) off()
-        }
-    }, [activeId, uid])
-
     const monthNow = iso(now).slice(0, 7)
     const myTier = useMemo(() => tierState(activeDaysIn(monthNow, activity, focus, s.days || {}, STREAK_MIN), monthNow).tier, [monthNow, activity, focus, s.days])
 
@@ -900,7 +872,7 @@ export default function StudyGroup() {
     const order = useMemo(() => [...rows].sort((a, b) => b[period] - a[period] || byName(a, b)), [rows, period])
     const todayOrder = useMemo(() => [...rows].sort((a, b) => b.today - a.today || byName(a, b)), [rows])
     const myRank = todayOrder.findIndex(r => r.uid === uid)
-    const cheers = useFeed(fb.watchCheers, activeId, uid, EMPTY)
+    const cheers = live.cheers[activeId] || EMPTY
     const group = useFeed(fb.watchGroup, activeId, uid, null)
     const sessions = useFeed(fb.watchGroupEvents, activeId, uid, EMPTY)
     const goal = (group && group.goal) || 0
@@ -922,24 +894,6 @@ export default function StudyGroup() {
         members.forEach(m => Object.entries(m.days || {}).forEach(([k, v]) => { out[k] = (out[k] || 0) + v }))
         return out
     }, [members])
-
-    // A friend cheers you
-    useEffect(() => {
-        if (cheers === EMPTY) return
-        const before = seenCheers.current
-        seenCheers.current = { id: activeId, at: Object.fromEntries(cheers.map(c => [c.id, c.at])) }
-        if (!before || before.id !== activeId) return
-        cheers.forEach(c => {
-            if (c.to !== uid || c.at === before.at[c.id]) return
-            const who = members.find(m => m.uid === c.from)
-            notify({
-                title: c.kind === 'nudge' ? `${who ? who.name : 'A friend'} nudged you ${NUDGE}` : `${who ? who.name : 'A friend'} cheered you ${CHEERS[c.kind] || '👏'}`,
-                body: c.kind === 'nudge' ? 'You still have todos planned today. Open the dashboard!' : 'Keep going, they are counting on you!',
-                icon: '💌',
-            })
-            play('cheer')
-        })
-    }, [cheers]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // A friend plans a study session. Your own sessions from over a month ago are removed.
     useEffect(() => {
@@ -966,20 +920,6 @@ export default function StudyGroup() {
         notify({ title: 'Group goal reached!', body: `Together you studied ${fmtMin(weekTotal)} this week.`, icon: '🎉' })
         play('groupgoal')
     }, [goal, weekTotal]) // eslint-disable-line react-hooks/exhaustive-deps
-
-    // A friend starts studying
-    useEffect(() => {
-        if (!members.length) return
-        const before = seen.current
-        seen.current = { id: activeId, map: Object.fromEntries(members.map(m => [m.uid, Boolean(m.studying)])) }
-        if (!before || before.id !== activeId) return
-        members.forEach(m => {
-            if (m.uid !== uid && m.studying && !before.map[m.uid]) {
-                notify({ title: `${m.name} is studying`, body: 'Join in and keep up!', icon: '📖' })
-                play('friendon')
-            }
-        })
-    }, [members]) // eslint-disable-line react-hooks/exhaustive-deps
 
     // You pass a friend today
     useEffect(() => {
@@ -1057,7 +997,7 @@ export default function StudyGroup() {
         play('save')
         publish(user)
     }
-    const sendCheer = (toUid, kind) => cheerFriend(activeId, uid, toUid, kind, (cheers.find(c => c.id === `${uid}_${toUid}`) || {}).n || 0)
+    const sendCheer = (toUid, kind) => cheer(activeId, toUid, kind)
     const startBlock = min => {
         fb.setGroupBlock(activeId, { start: Date.now(), min, by: uid }).then(() => play('save')).catch(fail)
         joinBlock()
@@ -1124,6 +1064,7 @@ const removeShare = id => {
     }
 
     return (
+        <div className="sg-page">
         <div className="sg">
             <style>{CSS}</style>
             <header className="sg-head">
@@ -1287,6 +1228,8 @@ const removeShare = id => {
             {editing && <ProfileModal name={s.name} profile={s.profile} onSave={saveProfile} onClose={() => setEditing(false)} />}
             {profileRow && <ProfileView r={profileRow} isMe={profileRow.uid === uid} cheerCount={cheered[profileRow.uid] || 0} onCheer={sendCheer} onClose={() => setProfileId(null)} />}
         </div>
+        <PresenceSidebar uid={uid} activeId={activeId} />
+        </div>
     )
 }
 
@@ -1304,6 +1247,9 @@ const CSS = `
 .sg-subs{list-style:none;margin:0;padding:0;display:grid;gap:8px}.sg-subs li{display:grid;grid-template-columns:1fr auto;gap:2px 8px}.sg-subs .bar{grid-column:1/-1;margin:0}
 .sg-hist summary{cursor:pointer}.sg-hl{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
 .sg-hl li{display:flex;gap:6px 14px;flex-wrap:wrap;padding:6px 10px;border-radius:8px;background:var(--sf2);font-size:13px}.sg-hl li b{min-width:150px}
+.sg-page{display:flex;gap:18px;align-items:flex-start;max-width:1900px;margin:auto;padding-right:20px}
+.sg-page>.sg{flex:1;min-width:0;margin:0}
+@media (max-width:1100px){.sg-page{flex-direction:column-reverse;align-items:stretch;padding:0 20px}.sg-page>.sg{padding-left:0;padding-right:0}}
 .sg{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;gap:18px}
 .sg-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.sg-head h1{font-size:32px}
 .sg-box{padding:20px;display:grid;gap:10px}

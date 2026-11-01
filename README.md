@@ -15,8 +15,6 @@ The React Compiler is not enabled on this template because of its impact on dev 
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
 
-
-
 ```
 studyhub
 ├─ eslint.config.js
@@ -42,6 +40,7 @@ studyhub
 │  ├─ authErrors.js
 │  ├─ AuthGate.jsx
 │  ├─ BlockEditor.jsx
+│  ├─ brief.js
 │  ├─ Dashboard.jsx
 │  ├─ Database.jsx
 │  ├─ firebase.js
@@ -50,9 +49,13 @@ studyhub
 │  ├─ Icons.jsx
 │  ├─ iconUtils.js
 │  ├─ IntegrationsSettings.jsx
+│  ├─ live.js
+│  ├─ LiveWatcher.jsx
 │  ├─ main.jsx
 │  ├─ Notes.jsx
+│  ├─ PresenceSidebar.jsx
 │  ├─ PrivacyPolicy.jsx
+│  ├─ pushClient.js
 │  ├─ Rails.jsx
 │  ├─ Rewards.jsx
 │  ├─ Roadmap.jsx
@@ -66,7 +69,23 @@ studyhub
 │  ├─ StudyGroup.jsx
 │  ├─ sync.js
 │  ├─ todoActions.js
-│  └─ TodoTools.jsx
-└─ vite.config.js
+│  ├─ TodoTools.jsx
+│  └─ WelcomeBrief.jsx
+├─ vite.config.js
+└─ worker
+   ├─ .wrangler
+   │  └─ tmp
+   ├─ package.json
+   ├─ README.md
+   ├─ schema.sql
+   ├─ scripts
+   │  └─ gen-vapid.mjs
+   ├─ src
+   │  ├─ auth.js
+   │  ├─ index.js
+   │  └─ webpush.js
+   ├─ test
+   │  └─ crypto.test.js
+   └─ wrangler.toml
 
 ```

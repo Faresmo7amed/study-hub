@@ -1,14 +1,17 @@
 import { useSyncExternalStore } from 'react'
-import { addDays, getStore, iso, onStoreChange, pad, parseISO, setStore, startOfDay, uid } from './shared'
+import { addDays, getStore, iso, notify, onStoreChange, pad, parseISO, setStore, startOfDay, uid } from './shared'
 import { EVENT_COLORS } from './todoActions'
+import { workerCall, workerConfigured } from './pushClient'
 
 /* ============================================================
    Google Calendar sync (talks to Google directly from the browser, no server)
    - Events: two-way. A new, changed or deleted event on either side is copied to the other.
    - Todos: one-way. Each todo of the next weeks appears as an all-day item "☐ text" (☑ when done) and follows
      moves, edits and deletes. Nothing you do in Google changes your todos.
-   - Sign-in uses Google Identity Services with the web client id in VITE_GOOGLE_CLIENT_ID. The access token lasts about
-     an hour and is kept on this device only (store key "gcal"), so the app asks you to reconnect when it runs out.
+   - Sign-in uses Google Identity Services with the web client id in VITE_GOOGLE_CLIENT_ID.
+     With the Worker (worker/README.md) you connect ONCE: the Worker keeps Google's refresh token and hands the app a new
+     access token (about an hour) whenever it asks, so there is never a popup again. Without the Worker, the app never
+     opens a hidden popup by itself either: when the hour is over it simply waits until you press Connect.
    - Events keep two extra fields: gid (the Google event id) and gsig (what the event looked like at the last sync).
    Setup steps are in SETUP_NOTES.md.
    ============================================================ */
@@ -20,7 +23,7 @@ export const gcalConfigured = Boolean(CLIENT_ID)
 const SCOPE = 'https://www.googleapis.com/auth/calendar.events'
 const API = 'https://www.googleapis.com/calendar/v3'
 export const GCAL_KEY = 'gcal'
-export const GCAL_DEFAULT = { token: '', exp: 0, on: false, todos: true, last: 0, deleted: [], error: '', stats: null }
+export const GCAL_DEFAULT = { token: '', exp: 0, on: false, todos: true, last: 0, deleted: [], error: '', stats: null, linked: false }
 
 const state = () => getStore(GCAL_KEY, GCAL_DEFAULT)
 const patchState = patch => setStore(GCAL_KEY, cur => ({ ...cur, ...patch }), GCAL_DEFAULT)
@@ -49,22 +52,53 @@ const loadGIS = () => {
     return gisPromise
 }
 
-// interactive=false tries to get a new token without showing anything (works while the Google session is alive)
-export async function connectGoogle(interactive = true) {
+// What it does: asks the Worker for a fresh Google access token. No window, no click.
+// When to use it: whenever the token ran out. Returns true when a new token is stored, false when you must connect again.
+export async function refreshToken() {
+    if (!workerConfigured || !state().linked) return false
+    try {
+        const r = await workerCall('/google/token')
+        patchState({ token: r.access_token, exp: Date.now() + (Number(r.expires_in) || 3600) * 1000 - 60000, on: true, error: '' })
+        return true
+    } catch (e) {
+        if (e.status === 404 || e.status === 401) patchState({ linked: false }) // Google access was removed: connect again once
+        return false
+    }
+}
+
+// What it does: the one and only sign-in window. It runs only when YOU press Connect.
+// With the Worker it uses the "authorization code" way, so the Worker can keep Google access for good.
+// Without the Worker it falls back to a one-hour token.
+export async function connectGoogle() {
     if (!gcalConfigured) throw new Error('Google Calendar is not set up yet. Add VITE_GOOGLE_CLIENT_ID (see SETUP_NOTES.md).')
     await loadGIS()
+    const oauth = window.google.accounts.oauth2
+    const fail = e => new Error(e && e.type === 'popup_closed' ? 'The Google window was closed before finishing.' : (e && e.message) || 'Google sign-in failed.')
+    if (workerConfigured) {
+        const code = await new Promise((resolve, reject) => {
+            oauth.initCodeClient({
+                client_id: CLIENT_ID,
+                scope: SCOPE,
+                ux_mode: 'popup',
+                callback: r => (r.error ? reject(new Error(r.error_description || r.error)) : resolve(r.code)),
+                error_callback: e => reject(fail(e)),
+            }).requestCode()
+        })
+        const r = await workerCall('/google/code', 'POST', { code })
+        patchState({ token: r.access_token, exp: Date.now() + (Number(r.expires_in) || 3600) * 1000 - 60000, on: true, linked: true, error: '' })
+        return
+    }
     await new Promise((resolve, reject) => {
-        const client = window.google.accounts.oauth2.initTokenClient({
+        oauth.initTokenClient({
             client_id: CLIENT_ID,
             scope: SCOPE,
             callback: r => {
                 if (r.error) return reject(new Error(r.error_description || r.error))
-                patchState({ token: r.access_token, exp: Date.now() + (Number(r.expires_in) || 3600) * 1000 - 60000, on: true, error: '' })
+                patchState({ token: r.access_token, exp: Date.now() + (Number(r.expires_in) || 3600) * 1000 - 60000, on: true, linked: false, error: '' })
                 return resolve()
             },
-            error_callback: e => reject(new Error(e && e.type === 'popup_closed' ? 'The Google window was closed before finishing.' : (e && e.message) || 'Google sign-in failed.')),
-        })
-        client.requestAccessToken({ prompt: interactive ? '' : 'none' })
+            error_callback: e => reject(fail(e)),
+        }).requestAccessToken({ prompt: '' })
     })
 }
 
@@ -73,7 +107,8 @@ export function disconnectGoogle() {
     try {
         if (token && window.google && window.google.accounts) window.google.accounts.oauth2.revoke(token, () => {})
     } catch { /* already revoked */ }
-    patchState({ token: '', exp: 0, on: false, error: '' })
+    if (state().linked) workerCall('/google', 'DELETE').catch(() => {})
+    patchState({ token: '', exp: 0, on: false, linked: false, error: '' })
 }
 
 /* ---------- Google API ---------- */
@@ -92,6 +127,7 @@ async function gfetch(path, { method = 'GET', body, params } = {}) {
         if (res.status === 204) return null
         if (res.status === 401) {
             patchState({ token: '', exp: 0 })
+            if (attempt === 0 && (await refreshToken())) continue
             throw Object.assign(new Error('Google sign-in expired. Connect again.'), { code: 'expired' })
         }
         if (res.ok) return res.json()
@@ -178,7 +214,7 @@ const todoSigRemote = r => `${String(r.summary || '').startsWith('☑') ? 1 : 0}
 let suppressUntil = 0 // changes we make ourselves must not trigger another sync
 
 async function runSync() {
-    if (!tokenValid(state())) throw Object.assign(new Error('Google sign-in expired. Connect again.'), { code: 'expired' })
+    if (!tokenValid(state()) && !(await refreshToken())) throw Object.assign(new Error('Google sign-in expired. Connect again.'), { code: 'expired' })
     const today = startOfDay(new Date())
     const from = addDays(today, -30)
     const to = addDays(today, 365)
@@ -321,19 +357,30 @@ export function syncGoogle() {
 }
 
 /* ---------- automatic sync (call once when the app starts) ---------- */
+// What it does: syncs by itself when the app opens, when you come back to the tab, and a few seconds after you change
+// an event or a todo. It never opens a window: a new token comes from the Worker, and without the Worker the app
+// only syncs while the one-hour token is still valid. When you must sign in again, one calm notice is shown per session.
 let started = false
 export function startGoogleAutoSync() {
     if (started || !gcalConfigured) return
     started = true
     let timer = null
-    let lastSilent = 0
+    let told = false
     const attempt = async () => {
         const g = state()
         if (!g.on) return
-        if (!tokenValid(g)) {
-            if (Date.now() - lastSilent < 600000) return
-            lastSilent = Date.now()
-            try { await connectGoogle(false) } catch { return } // needs the user: the Settings window shows "Reconnect"
+        if (!tokenValid(g) && !(await refreshToken())) {
+            if (!told) {
+                told = true
+                notify({
+                    title: 'Google Calendar needs you once',
+                    body: workerConfigured ? 'Press Connect one time. After that it stays connected without any window.' : 'The one-hour Google access ended. Press Reconnect to keep syncing.',
+                    icon: '📅',
+                    sticky: true,
+                    actions: [{ label: 'Connect', onClick: () => { connectGoogle().then(() => syncGoogle()).catch(e => notify({ title: 'Google Calendar', body: e.message, icon: '⚠️' })) } }],
+                })
+            }
+            return
         }
         syncGoogle().catch(() => {})
     }
@@ -347,6 +394,5 @@ export function startGoogleAutoSync() {
     window.addEventListener('focus', () => trigger(1500))
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') trigger(1500) })
     setInterval(() => { if (document.visibilityState === 'visible') trigger(500) }, 300000)
-    trigger(3000)
+    trigger(2500)
 }
-

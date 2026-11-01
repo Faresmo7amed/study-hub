@@ -64,6 +64,13 @@ export async function signInGoogle() {
     await A.signInWithPopup(auth, new A.GoogleAuthProvider())
 }
 
+// What it does: returns a fresh sign-in token (a signed proof of who you are) for the Worker.
+// When to use it: before every call to your own Worker. It is empty when nobody is signed in.
+export async function getIdToken() {
+    const { auth } = await load()
+    return auth.currentUser ? auth.currentUser.getIdToken() : ''
+}
+
 export async function resetPassword(email) {
     const { A, auth } = await load()
     await A.sendPasswordResetEmail(auth, email)
@@ -107,6 +114,22 @@ export async function listApproved() {
     const { F, db } = await load()
     const snap = await withTimeout(F.getDocs(F.collection(db, 'approved')))
     return snap.docs.map(d => ({ uid: d.id, ...d.data() })).sort((a, b) => (a.email || '').localeCompare(b.email || ''))
+}
+
+// Live version of listRequests, for the owner. The callback runs now and whenever somebody asks or is removed.
+export async function watchRequests(onData, onError) {
+    const { F, db } = await load()
+    return F.onSnapshot(
+        F.collection(db, 'requests'),
+        snap => onData(snap.docs.map(d => ({ uid: d.id, ...d.data() })).sort((a, b) => (b.at || 0) - (a.at || 0))),
+        onError,
+    )
+}
+
+// Live "am I approved yet?" for the waiting screen. The callback gets true as soon as the owner approves.
+export async function watchApproval(uid, onData, onError) {
+    const { F, db } = await load()
+    return F.onSnapshot(F.doc(db, 'approved', uid), snap => onData(snap.exists()), onError)
 }
 
 export async function approveUser(uid, email) {
@@ -201,6 +224,13 @@ export async function groupInfo(code) {
 export async function saveMember(code, uid, card) {
     const { F, db } = await load()
     await withTimeout(F.setDoc(F.doc(db, 'groups', code, 'members', uid), card))
+}
+
+// What it does: changes only the "seen" time of your card (a tiny write), so friends know you are online.
+// When to use it: every couple of minutes while the app is open.
+export async function touchMember(code, uid) {
+    const { F, db } = await load()
+    await F.updateDoc(F.doc(db, 'groups', code, 'members', uid), { seen: Date.now() })
 }
 
 export async function leaveGroup(code, uid) {

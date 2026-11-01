@@ -22,11 +22,18 @@ self.addEventListener('notificationclick', event => {
     })())
 })
 
-// Ready for server-sent push messages later (needs a backend; see SETUP notes). Harmless until then.
+// Messages sent by the Worker (see worker/README.md) while the app is closed.
+// If a Study Hub window is open and visible, the app already shows the same thing itself, so the push stays silent.
+// (Browsers require every push to show something; a visible window is the one allowed exception.)
 self.addEventListener('push', event => {
     let data = {}
     try { data = event.data ? event.data.json() : {} } catch { data = { title: 'Study Hub', body: event.data && event.data.text() } }
-    event.waitUntil(self.registration.showNotification(data.title || 'Study Hub', {
-        body: data.body || '', icon: '/icon-192.png', badge: '/icon-192.png', data: { url: data.url || '/#/dashboard' },
-    }))
+    event.waitUntil((async () => {
+        const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+        if (all.some(c => c.visibilityState === 'visible')) return
+        await self.registration.showNotification(data.title || 'Study Hub', {
+            body: data.body || '', tag: data.tag || undefined, icon: '/icon-192.png', badge: '/icon-192.png',
+            vibrate: [200, 100, 200], data: { url: data.url || '/#/dashboard' },
+        })
+    })())
 })

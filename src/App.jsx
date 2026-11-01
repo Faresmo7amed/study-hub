@@ -18,6 +18,8 @@ import AuthGate from './AuthGate'
 import { AdminModal, AdminWatcher } from './AdminPanel'
 import { TodoDetailsHost } from './TodoTools'
 import { startGoogleAutoSync } from './gcal'
+import LiveWatcher from './LiveWatcher'
+import WelcomeBrief from './WelcomeBrief'
 import * as fb from './firebase'
 
 const PAGES = [
@@ -462,6 +464,8 @@ export default function App() {
                 <AdminWatcher onOpen={() => setAdminOpen(true)} />
                 <TodoDetailsHost />
                 <StudyPublisher />
+                <LiveWatcher />
+                <WelcomeBrief />
                 <Reminders />
                 <GameWatcher />
             </AuthGate>

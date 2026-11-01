@@ -4,6 +4,7 @@ import { SYNC_KEYS, notify, systemNotify } from './shared'
 import { friendly } from './authErrors'
 import { play } from './sound'
 import { useSyncState } from './sync'
+import { notifyApproved } from './pushClient'
 
 /* ============================================================
    Owner tools. Only the account whose id is VITE_ADMIN_UID (and written in firestore.rules) sees this,
@@ -16,32 +17,34 @@ const when = ms => (ms ? new Date(ms).toLocaleString(undefined, { dateStyle: 'me
 export function AdminWatcher({ onOpen }) {
     const { user, access } = useSyncState()
     const seen = useRef(null)
+    const open = useRef(onOpen)
+    open.current = onOpen
     const owner = fb.isAdmin(user) && access === 'approved'
 
+    // A live listener: the owner is told the moment somebody asks, no polling and no refresh
     useEffect(() => {
         if (!owner) return undefined
-        let stop = false
-        const check = async () => {
-            try {
-                const list = (await fb.listRequests()).filter(r => r.status === 'pending')
-                if (stop) return
-                const ids = new Set(list.map(r => r.uid))
-                if (seen.current) {
-                    const fresh = list.filter(r => !seen.current.has(r.uid))
-                    if (fresh.length) {
-                        const names = fresh.map(r => r.email || r.uid).join(', ')
-                        notify({ title: 'New account request', body: names, icon: '👤', sticky: true, actions: [{ label: 'Review', onClick: onOpen }] })
-                        play('reminder')
-                        systemNotify('New account request', names, { tag: 'admin-request', sticky: true })
-                    }
+        let off = null
+        let dead = false
+        fb.watchRequests(all => {
+            const list = all.filter(r => r.status === 'pending')
+            const ids = new Set(list.map(r => r.uid))
+            if (seen.current) {
+                const fresh = list.filter(r => !seen.current.has(r.uid))
+                if (fresh.length) {
+                    const names = fresh.map(r => r.email || r.uid).join(', ')
+                    notify({ title: 'New account request', body: names, icon: '👤', sticky: true, actions: [{ label: 'Review', onClick: () => open.current() }] })
+                    play('reminder')
+                    if (document.visibilityState !== 'visible') systemNotify('New account request', names, { tag: 'admin-request', sticky: true })
                 }
-                seen.current = ids
-            } catch { /* offline or rules not published yet: try again later */ }
-        }
-        check()
-        const id = setInterval(check, 60000)
-        return () => { stop = true; clearInterval(id) }
-    }, [owner, onOpen])
+            }
+            seen.current = ids
+        }, () => { /* rules not published yet: nothing to show */ }).then(stop => {
+            if (dead) stop()
+            else off = stop
+        }).catch(() => {})
+        return () => { dead = true; if (off) off() }
+    }, [owner])
 
     return null
 }
@@ -103,7 +106,7 @@ export function AdminModal({ onClose }) {
                     {pending.map(r => (
                         <li key={r.uid}>
                             <div className="grow"><b>{r.email || r.name || r.uid}</b><span className="muted small">Asked {when(r.at)}</span></div>
-                            <button className="btn sm primary" disabled={busy === r.uid} onClick={() => run(r.uid, () => fb.approveUser(r.uid, r.email), 'Account approved')}>Approve</button>
+                            <button className="btn sm primary" disabled={busy === r.uid} onClick={() => run(r.uid, () => fb.approveUser(r.uid, r.email).then(() => notifyApproved(r.uid)), 'Account approved')}>Approve</button>
                             <button className="btn sm danger" disabled={busy === r.uid} onClick={() => run(r.uid, () => fb.denyUser(r.uid, r.email), 'Request declined')}>Decline</button>
                         </li>
                     ))}
@@ -136,7 +139,7 @@ export function AdminModal({ onClose }) {
                             {denied.map(r => (
                                 <li key={r.uid}>
                                     <div className="grow"><b>{r.email || r.uid}</b><span className="muted small">{when(r.at)}</span></div>
-                                    <button className="btn sm" disabled={busy === r.uid} onClick={() => run(r.uid, () => fb.approveUser(r.uid, r.email), 'Account approved')}>Approve anyway</button>
+                                    <button className="btn sm" disabled={busy === r.uid} onClick={() => run(r.uid, () => fb.approveUser(r.uid, r.email).then(() => notifyApproved(r.uid)), 'Account approved')}>Approve anyway</button>
                                     <button className="btn sm ghost" disabled={busy === r.uid} onClick={() => run(r.uid, () => fb.forgetRequest(r.uid), 'Entry cleared')}>Clear</button>
                                 </li>
                             ))}

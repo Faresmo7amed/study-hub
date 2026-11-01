@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { notify, registerWorker, systemNotify, useStore } from './shared'
 import { GCAL_DEFAULT, connectGoogle, disconnectGoogle, gcalConfigured, syncGoogle, tokenValid, useGcalBusy } from './gcal'
+import { pushReady, pushSupported, subscribePush, unsubscribePush, workerConfigured } from './pushClient'
 
 /* Two sections of the Settings window: system notifications and Google Calendar.
    Every button here has type="button" because the Settings window is a form. */
@@ -11,6 +12,8 @@ export function NotificationsSection({ time, onTime }) {
     const supported = typeof window !== 'undefined' && 'Notification' in window
     const [perm, setPerm] = useState(() => (supported ? Notification.permission : 'unsupported'))
     const [worker, setWorker] = useState('checking')
+    const [push] = useStore('push', {})
+    const [pushMsg, setPushMsg] = useState('')
 
     useEffect(() => {
         let alive = true
@@ -27,6 +30,18 @@ export function NotificationsSection({ time, onTime }) {
             setWorker('ready')
             if (result === 'granted') await systemNotify('Notifications are on', 'Event and todo reminders will appear like this.', { tag: 'welcome' })
         } catch { setPerm(Notification.permission) }
+    }
+    const turnOnPush = async () => {
+        setPushMsg('')
+        try {
+            await subscribePush()
+            setPerm(Notification.permission)
+            setPushMsg('Done. This device will be notified even when Study Hub is closed.')
+        } catch (e) { setPushMsg(e.message) }
+    }
+    const turnOffPush = async () => {
+        await unsubscribePush()
+        setPushMsg('Closed-app notifications are off on this device.')
     }
     const test = async () => {
         const ok = await systemNotify('Study Hub test', 'If you can read this, reminders will reach you.', { tag: 'test' })
@@ -50,11 +65,24 @@ export function NotificationsSection({ time, onTime }) {
                     {perm === 'denied' && <p className="small" style={{ color: 'var(--wip)' }}>Notifications are blocked. Open the site settings of your browser (the lock icon next to the address, or the app info on your phone), allow Notifications, then reload.</p>}
                 </>
             )}
+            <h3 className="st-h">When the app is closed</h3>
+            {!pushReady && <p className="muted small" style={{ marginTop: 0 }}>Not set up yet. Deploy the free Worker from the <code>worker</code> folder (worker/README.md), then add <code>VITE_PUSH_URL</code> and <code>VITE_VAPID_PUBLIC_KEY</code> to your <code>.env</code>.</p>}
+            {pushReady && !pushSupported() && <p className="muted small" style={{ marginTop: 0 }}>This browser cannot receive push messages. On iPhone or iPad, add Study Hub to the Home Screen first (iOS 16.4 or newer) and open it from there.</p>}
+            {pushReady && pushSupported() && (
+                <>
+                    <p className="small" style={{ marginTop: 0 }}>Status on this device: <b>{push.on && perm === 'granted' ? 'on' : 'off'}</b>. Event reminders, streak reminders, friend nudges and account approvals reach you even when no tab is open. Turn it on once per device.</p>
+                    <div className="row" style={{ marginBottom: 8 }}>
+                        {!(push.on && perm === 'granted') && <button type="button" className="btn primary" onClick={turnOnPush}>Notify me when closed</button>}
+                        {push.on && perm === 'granted' && <button type="button" className="btn" onClick={turnOffPush}>Turn off on this device</button>}
+                    </div>
+                    {pushMsg && <p className="small" style={{ margin: 0 }} role="status">{pushMsg}</p>}
+                </>
+            )}
             <label className="field"><span>Daily reminder for unfinished todos (empty = off)</span>
                 <input type="time" value={time || ''} onChange={e => onTime(e.target.value)} />
             </label>
             <p className="muted small" style={{ marginTop: 0 }}>
-                Reminders fire while Study Hub is open, including in the background of a browser tab or an installed app. To also get them when the app is completely closed, connect Google Calendar below: your phone’s Calendar app then rings for every event.
+                While Study Hub is open (even in a background tab) reminders appear at once. With closed-app notifications on, the Worker sends them when nothing is open. Connecting Google Calendar below also makes your phone’s Calendar app ring for every event.
             </p>
         </>
     )
@@ -66,6 +94,7 @@ export function GoogleCalendarSection() {
     const [msg, setMsg] = useState('')
     const [err, setErr] = useState('')
     const live = tokenValid(g)
+    const linked = Boolean(g.linked) && workerConfigured
 
     const run = async fn => {
         setErr('')
@@ -77,7 +106,7 @@ export function GoogleCalendarSection() {
         }
     }
     const connect = () => run(async () => {
-        await connectGoogle(true)
+        await connectGoogle()
         const r = await syncGoogle()
         setMsg(`Connected. Sent ${r.sent}, received ${r.received}.`)
     })
@@ -95,14 +124,14 @@ export function GoogleCalendarSection() {
             {gcalConfigured && (
                 <>
                     <p className="small" style={{ marginTop: 0 }}>
-                        Status: <b>{g.on ? (live ? 'connected' : 'needs reconnecting') : 'not connected'}</b> · last sync: {when(g.last)}
+                        Status: <b>{g.on ? (live || linked ? 'connected' : 'needs reconnecting') : 'not connected'}</b> · last sync: {when(g.last)}
                     </p>
                     <p className="muted small" style={{ marginTop: 0 }}>
-                        Events sync both ways between the main calendar, the sidebar calendar and your Google calendar. Google access lasts about an hour; after that, press Connect again (the app also tries by itself).
+                        Events sync both ways between the main calendar, the sidebar calendar and your Google calendar. It syncs by itself every time you open Study Hub or come back to it. {workerConfigured ? 'You connect once; the Worker renews Google access in the background, so no window ever pops up.' : 'Google access lasts about an hour; set up the Worker to make this permanent, otherwise press Reconnect when it ends.'}
                     </p>
                     <div className="row" style={{ marginBottom: 8 }}>
-                        {(!g.on || !live) && <button type="button" className="btn primary" onClick={connect} disabled={busy}>{g.on ? 'Reconnect' : 'Connect Google Calendar'}</button>}
-                        {g.on && live && <button type="button" className="btn" onClick={sync} disabled={busy}>{busy ? 'Syncing…' : 'Sync now'}</button>}
+                        {(!g.on || (!live && !linked)) && <button type="button" className="btn primary" onClick={connect} disabled={busy}>{g.on ? 'Reconnect' : 'Connect Google Calendar'}</button>}
+                        {g.on && (live || linked) && <button type="button" className="btn" onClick={sync} disabled={busy}>{busy ? 'Syncing…' : 'Sync now'}</button>}
                         {g.on && <button type="button" className="btn danger" onClick={() => { disconnectGoogle(); setMsg('Disconnected. Your events stay here and in Google.') }}>Disconnect</button>}
                     </div>
                     <label className="row" style={{ marginBottom: 8 }}>

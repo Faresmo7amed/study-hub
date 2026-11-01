@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import * as fb from './firebase'
 import { recheckAccess, useSyncState } from './sync'
+import { notifyAdminRequest } from './pushClient'
 import { useStore } from './shared'
 import { friendly } from './authErrors'
 
@@ -119,12 +120,25 @@ function WaitingPage({ denied }) {
     const s = useSyncState()
     const [busy, setBusy] = useState(false)
 
-    // Check again by itself every 20 seconds, so the page opens as soon as the owner approves
+    // A live listener on your approval: the page opens the moment the owner approves, with no waiting and no refresh.
+    // The slow check every minute is only a safety net (for example if the rules were not published yet).
+    const uid = s.user ? s.user.uid : ''
     useEffect(() => {
-        if (denied) return undefined
-        const id = setInterval(() => { recheckAccess() }, 20000)
-        return () => clearInterval(id)
-    }, [denied])
+        if (denied || !uid) return undefined
+        let off = null
+        let dead = false
+        fb.watchApproval(uid, yes => { if (yes) recheckAccess() }, () => {}).then(stop => {
+            if (dead) stop()
+            else off = stop
+        }).catch(() => {})
+        const id = setInterval(() => { recheckAccess() }, 60000)
+        return () => { dead = true; clearInterval(id); if (off) off() }
+    }, [denied, uid])
+
+    // Tell the owner (also on their phone, if the Worker is set up) that somebody is waiting
+    useEffect(() => {
+        if (!denied && uid) notifyAdminRequest()
+    }, [denied, uid])
 
     const again = async () => {
         setBusy(true)
