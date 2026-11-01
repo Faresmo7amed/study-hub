@@ -1,0 +1,24 @@
+name = "studyhub-worker"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "studyhub"
+database_name = "studyhub"
+database_id = "9b6b35ba-89cb-47f3-8aac-ab74ad4b255e"
+
+[vars]
+FIREBASE_PROJECT_ID = "study-hub-d9932"
+ADMIN_UID = "IhNNk5cc9POqAmzeYIrunzp96bU2"
+GOOGLE_CLIENT_ID = "489336178180-fqi8usisbkrr3dbnpflmdml8njsiqh5k.apps.googleusercontent.com"
+VAPID_PUBLIC = "BFwVyrUPWKyDhoL85IUf-zno0OYWABwZuai73EmzI3jaIYqSB9QhlYNjIKpdvTdv2bUtqMbz0SQC8Vza-LWsggA"
+VAPID_SUBJECT = "mailto:farsmohamed122@gmail.com"
+# Where the app runs (no trailing slash). Several are allowed, separated by commas.
+ALLOWED_ORIGINS = "https://study-hub-8gh.pages.dev"
+
+# Secrets are NOT written here. Set them with:
+#   npx wrangler secret put VAPID_PRIVATE_JWK
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
