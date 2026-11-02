@@ -54,7 +54,7 @@ function StudyCard() {
             {active && (
                 <div className="row" style={{ gap: 6 }}>
                     {running ? <button className="btn grow" onClick={() => pauseSession(user)}>Pause</button> : <button className="btn primary grow" onClick={() => resumeSession(user)}>Resume</button>}
-                    <button className="btn danger grow" onClick={() => stopSession(user)}>Stop and save</button>
+                    <button className="btn danger grow" onClick={() => stopSession(user)}>Stop & Save</button>
                 </div>
             )}
         </section>
