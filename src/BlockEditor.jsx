@@ -44,22 +44,46 @@ export function cleanBlocks(list, depth = 0) {
     })
 }
 
-// Old study notes were one Markdown-like string. This turns them into blocks.
+// What it does: turns Markdown text into blocks: headings, bullets, numbers, [ ] todos, code fences and dividers.
+// Indented list lines (2 spaces or a tab per level) become nested children of the list item above them.
+// When to use it: when importing or pasting Markdown, and to convert old plain-text notes.
 export function mdToBlocks(md) {
-    const out = []
-    String(md || '').split('\n').forEach(line => {
+    const root = []
+    const stack = [] // open list items: { indent, b }
+    let code = null
+    String(md || '').replace(/\r/g, '').split('\n').forEach(line => {
+        if (code) {
+            if (/^\s*```/.test(line)) { root.push(newBlock('code', code.join('\n'))); code = null } else code.push(line)
+            return
+        }
+        if (/^\s*```/.test(line)) { stack.length = 0; code = []; return }
         const raw = line.replace(/\s+$/, '')
         if (!raw.trim()) return
+        const indent = raw.match(/^[ \t]*/)[0].replace(/\t/g, '  ').length
+        const t = raw.trim()
+        let b
         let m
-        if ((m = raw.match(/^(#{1,6})\s+(.*)$/))) out.push(newBlock('h' + m[1].length, m[2]))
-        else if ((m = raw.match(/^\s*[-*]\s+\[( |x|X)\]\s+(.*)$/))) out.push({ ...newBlock('todo', m[2]), done: m[1] !== ' ' })
-        else if ((m = raw.match(/^\s*[-*]\s+(.*)$/))) out.push(newBlock('bullet', m[1]))
-        else if ((m = raw.match(/^\s*\d+[.)]\s+(.*)$/))) out.push(newBlock('number', m[1]))
-        else if (/^---+$/.test(raw.trim())) out.push(newBlock('divider'))
-        else out.push(newBlock('p', raw))
+        if ((m = t.match(/^(#{1,6})\s+(.*)$/))) b = newBlock('h' + m[1].length, m[2])
+        else if ((m = t.match(/^[-*+]\s+\[( |x|X)\]\s+(.*)$/))) b = { ...newBlock('todo', m[2]), done: m[1] !== ' ' }
+        else if ((m = t.match(/^[-*+]\s+(.*)$/))) b = newBlock('bullet', m[1])
+        else if ((m = t.match(/^\d+[.)]\s+(.*)$/))) b = newBlock('number', m[1])
+        else if (/^(-{3,}|\*{3,})$/.test(t)) b = newBlock('divider')
+        else b = newBlock('p', t.replace(/^>\s?/, ''))
+        if (LISTY.includes(b.type)) {
+            while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop()
+            const parent = stack[stack.length - 1]
+            if (parent && depthOf(stack) < MAX_DEPTH - 1) parent.b.kids = [...(parent.b.kids || []), b]
+            else root.push(b)
+            stack.push({ indent, b })
+        } else {
+            stack.length = 0
+            root.push(b)
+        }
     })
-    return out
+    if (code) root.push(newBlock('code', code.join('\n')))
+    return root
 }
+const depthOf = stack => stack.length
 
 export function blocksToMarkdown(blocks, depth = 0) {
     const pad = '  '.repeat(depth)
@@ -174,6 +198,19 @@ export const ops = {
         ;[h.list[h.i], h.list[j]] = [h.list[j], h.list[h.i]]
         return true
     },
+    // checks or unchecks a todo (other types are left alone)
+    setDone(blocks, id, value) {
+        const h = find(blocks, id)
+        if (h && h.list[h.i].type === 'todo') h.list[h.i].done = value
+    },
+    // puts blocks after this one, or in its place when it is an empty text block
+    paste(blocks, id, list) {
+        const h = find(blocks, id)
+        if (!h) { blocks.push(...list); return }
+        const b = h.list[h.i]
+        if (!b.text && !(b.kids && b.kids.length) && b.type === 'p') h.list.splice(h.i, 1, ...list)
+        else h.list.splice(h.i + 1, 0, ...list)
+    },
     addChild(blocks, id, block) {
         const h = find(blocks, id)
         if (!h) return false
@@ -217,7 +254,8 @@ function Rows({ list, depth, ctx, numbered = true }) {
 }
 
 function Row({ b, idx, count, depth, num, ctx }) {
-    const { change, readOnly, setFocus } = ctx
+    const { change, readOnly, setFocus, selMode } = ctx
+    const picked = selMode && ctx.sel.includes(b.id)
     const kids = b.kids || []
     const t = b.type
     const isHead = HEADS.includes(t)
@@ -308,7 +346,8 @@ function Row({ b, idx, count, depth, num, ctx }) {
 
     return (
         <div className={'be-block' + (b.done ? ' done' : '')} data-depth={depth}>
-            <div className={'be-row t-' + t}>
+            <div className={'be-row t-' + t + (picked ? ' picked' : '')}>
+                {selMode && <input type="checkbox" className="be-sel" checked={picked} onChange={() => {}} onClick={e => ctx.toggleSel(b.id, e.shiftKey)} aria-label="Select this block" />}
                 <span className="be-lead">
                     {t === 'toggle' && <button type="button" className="be-caret" aria-expanded={open} aria-label={open ? 'Collapse' : 'Expand'} onClick={() => edit(bl => ops.patch(bl, b.id, { open: !open }))}>{open ? '▾' : '▸'}</button>}
                     {t === 'bullet' && <span className="be-mark" aria-hidden="true">{GUTTER.bullet}</span>}
@@ -395,10 +434,66 @@ export default function BlockEditor({ value, onChange, readOnly = false, label =
         change(bl => { bl.push(nb) })
     }
 
-    const ctx = { change, readOnly, setFocus, root }
+    /* ----- selecting several blocks (checkboxes, bullets, text...) and acting on them together ----- */
+    const [selMode, setSelMode] = useState(false)
+    const [sel, setSel] = useState([])
+    const lastSel = useRef(null)
+    const domIds = () => [...root.current.querySelectorAll('[data-bid]')].map(el => el.dataset.bid)
+    const toggleSel = (id, shift) => {
+        setSel(cur => {
+            if (shift && lastSel.current) {
+                const ids = domIds()
+                const a = ids.indexOf(lastSel.current)
+                const z = ids.indexOf(id)
+                if (a >= 0 && z >= 0) return [...new Set([...cur, ...ids.slice(Math.min(a, z), Math.max(a, z) + 1)])]
+            }
+            return cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]
+        })
+        lastSel.current = id
+    }
+    const inOrder = () => domIds().filter(id => sel.includes(id))
+    const each = (fn, reverse = false) => change(bl => { (reverse ? inOrder().reverse() : inOrder()).forEach(id => fn(bl, id)) })
+    const stopSelecting = () => { setSelMode(false); setSel([]); lastSel.current = null }
+    useEffect(() => {
+        if (!selMode) return undefined
+        const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); stopSelecting() } }
+        window.addEventListener('keydown', onKey, true)
+        return () => window.removeEventListener('keydown', onKey, true)
+    }, [selMode])
+
+    // Pasting Markdown (several lines, or lines that start with -, 1., # or [ ]) becomes real blocks
+    const onPaste = e => {
+        const el = e.target
+        if (readOnly || !el.dataset || !el.dataset.bid) return
+        const text = e.clipboardData.getData('text/plain')
+        if (!/\n/.test(text.trim()) && !/^\s*([-*+] |\d+[.)] |#{1,6} )/.test(text)) return
+        const list = mdToBlocks(text)
+        if (!list.length) return
+        e.preventDefault()
+        setFocus(list[list.length - 1].id)
+        change(bl => ops.paste(bl, el.dataset.bid, list))
+    }
+
+    const ctx = { change, readOnly, setFocus, root, selMode, sel, toggleSel }
     return (
-        <div className="be" ref={root} role="group" aria-label={label}>
+        <div className="be" ref={root} role="group" aria-label={label} onPaste={onPaste}>
             <style>{CSS}</style>
+            {selMode && (
+                <div className="be-selbar" role="toolbar" aria-label="Selected blocks">
+                    <b>{sel.length} selected</b>
+                    <button type="button" className="btn sm" onClick={() => setSel(domIds())}>All</button>
+                    <button type="button" className="btn sm" disabled={!sel.length} onClick={() => each((bl, id) => ops.setDone(bl, id, true))}>☑ Check</button>
+                    <button type="button" className="btn sm" disabled={!sel.length} onClick={() => each((bl, id) => ops.setDone(bl, id, false))}>☐ Uncheck</button>
+                    <select aria-label="Turn selected into" value="" disabled={!sel.length} onChange={e => { if (e.target.value) each((bl, id) => ops.setType(bl, id, e.target.value)) }}>
+                        <option value="">Turn into…</option>
+                        {BLOCK_TYPES.filter(([id]) => id !== 'divider').map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                    </select>
+                    <button type="button" className="btn sm" disabled={!sel.length} onClick={() => each((bl, id) => ops.indent(bl, id))}>⇥ Nest</button>
+                    <button type="button" className="btn sm" disabled={!sel.length} onClick={() => each((bl, id) => ops.outdent(bl, id), true)}>⇤ Out</button>
+                    <button type="button" className="btn sm danger" disabled={!sel.length} onClick={() => { each((bl, id) => ops.remove(bl, id)); setSel([]) }}>Delete</button>
+                    <button type="button" className="btn sm ghost" onClick={stopSelecting}>Done</button>
+                </div>
+            )}
             {blocks.length === 0 && readOnly && <p className="muted small">Nothing here yet.</p>}
             <Rows list={blocks} depth={0} ctx={ctx} />
             {!readOnly && (
@@ -414,6 +509,7 @@ export default function BlockEditor({ value, onChange, readOnly = false, label =
                     <button type="button" className="btn sm" onClick={() => add('toggle')}>▸ Toggle</button>
                     <button type="button" className="btn sm" onClick={() => add('code')}>{'</>'} Code</button>
                     <button type="button" className="btn sm" onClick={() => add('divider')}>— Divider</button>
+                    <button type="button" className={'btn sm' + (selMode ? ' on' : '')} onClick={() => (selMode ? stopSelecting() : setSelMode(true))} title="Select several blocks to check, move, convert or delete them together">☑ Select</button>
                 </div>
             )}
         </div>
@@ -446,6 +542,10 @@ const CSS = `
 .be-actions select{width:auto!important;padding:2px 4px!important;font-size:12px;height:26px}
 .be-actions .icon-btn{padding:1px 6px;font-size:14px}.be-actions .icon-btn:disabled{opacity:.3;cursor:default}
 .be-del:hover{color:var(--bad)!important}
+.be-sel{flex:none;margin-top:9px}
+.be-row.picked{background:color-mix(in srgb,var(--ac) 14%,transparent)}
+.be-selbar{position:sticky;top:0;z-index:5;display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px 8px;margin-bottom:6px;background:var(--sf);border:1px solid var(--ac);border-radius:10px}
+.be-selbar select{width:auto!important;padding:4px 8px!important;font-size:13px}
 .be-add{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:10px;border-top:1px dashed var(--ln)}
 .be-add select{width:auto!important;padding:4px 8px!important;font-size:13px}
 @media(max-width:640px){.be-h1{font-size:25px!important}.be-h2{font-size:22px!important}}

@@ -319,7 +319,7 @@ function RecurringCard() {
    Weekly board (Saturday to Friday)
    ============================================================ */
 
-function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn, onShift }) {
+function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn, onShift, onDup }) {
     const [editing, setEditing] = useState(false)
     const [edge, setEdge] = useState(null) // 'top' | 'bottom' | null: where a dragged todo would land
     const [draft, setDraft] = useState(todo.text)
@@ -331,6 +331,7 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn, onShift }) 
         <>
             <button className="icon-btn td-open" onClick={() => openTodoDetails(todo.id)} aria-label={`Open details of ${todo.text}`} title="Open details window">Open</button>
             <button className="icon-btn td-open" onClick={() => onShift(todo)} aria-label={`Move ${todo.text} to another day`} title="Move to another day">→</button>
+            <button className="icon-btn td-open" onClick={() => onDup(todo)} aria-label={`Duplicate ${todo.text}`} title="Duplicate this todo">⧉</button>
         </>
     )
 
@@ -403,7 +404,7 @@ function TodoItem({ todo, day, onToggle, onEdit, onDelete, onDropOn, onShift }) 
     )
 }
 
-function DayColumn({ day, date, list, isToday, isPast, filter, query = '', onAdd, onToggle, onEdit, onDelete, onMove, onShift }) {
+function DayColumn({ day, date, list, isToday, isPast, filter, query = '', onAdd, onToggle, onEdit, onDelete, onMove, onShift, onDup }) {
     const [adding, setAdding] = useState(false)
     const [text, setText] = useState('')
     const [type, setType] = useState('task')
@@ -443,7 +444,7 @@ function DayColumn({ day, date, list, isToday, isPast, filter, query = '', onAdd
                 {shown.map(t => (
                     <TodoItem key={t.id} todo={t} day={day} onToggle={(id, el) => onToggle(day, id, el)}
                         onEdit={(id, patch) => onEdit(day, id, patch)} onDelete={id => onDelete(day, id)}
-                        onDropOn={(from, id, targetId, after) => onMove(from, id, day, targetId, after)} onShift={t => onShift(iso(date), t.id)} />
+                        onDropOn={(from, id, targetId, after) => onMove(from, id, day, targetId, after)} onShift={t => onShift(iso(date), t.id)} onDup={t2 => onDup(day, t2)} />
                 ))}
             </ul>
             {shown.length === 0 && !adding && <p className="muted small wk-empty">{list.length ? 'Nothing of this type.' : isPast ? 'Nothing planned.' : 'Plan something for this day.'}</p>}
@@ -495,6 +496,17 @@ function WeekBoard() {
         const t = ensure(d)[day].find(x => x.id === id)
         if (t) Object.assign(t, patch)
     })
+    // What it does: puts a copy of a todo right under it (not done, new id, same type and link).
+    // When to use it: from the ⧉ button of a todo.
+    const duplicate = (day, todo) => {
+        update(d => {
+            const list = ensure(d)[day]
+            const at = list.findIndex(x => x.id === todo.id)
+            const { details, ...plain } = todo // eslint-disable-line no-unused-vars
+            list.splice(at + 1, 0, { ...plain, id: uid(), done: false, doneOn: null, ...(details ? { details: structuredClone(details).map(function re(b) { return { ...b, id: uid(), ...(b.kids ? { kids: b.kids.map(re) } : {}) } }) } : {}) })
+        })
+        play('add')
+    }
     const remove = (day, id) => {
         const t = week[day].find(x => x.id === id)
         if (t && t.done && t.doneOn) setStore('activity', cur => ({ ...cur, [t.doneOn]: Math.max(0, (cur[t.doneOn] || 1) - 1) }), {})
@@ -592,7 +604,7 @@ function WeekBoard() {
                     return (
                         <DayColumn key={i} day={i} date={date} list={week[i]} filter={filter} query={query}
                             isToday={iso(date) === today} isPast={iso(date) < today}
-                            onAdd={add} onToggle={(day, id, el) => toggleTodo(key, day, id, el)} onEdit={edit} onDelete={remove} onMove={move} onShift={(from, id) => setShift({ from, ids: [id] })} />
+                            onAdd={add} onToggle={(day, id, el) => toggleTodo(key, day, id, el)} onEdit={edit} onDelete={remove} onMove={move} onDup={duplicate} onShift={(from, id) => setShift({ from, ids: [id] })} />
                     )
                 })}
             </div>

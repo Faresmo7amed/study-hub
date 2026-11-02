@@ -85,3 +85,11 @@ npx wrangler tail # live logs while you test
 - Only the owner (`ADMIN_UID`) can trigger "account approved" messages.
 - Spam guards: one nudge per friend per 20 s, one admin alert per person per hour.
 - The Google refresh token lives only in your own D1 database. Disconnecting in Settings revokes it at Google and deletes it.
+
+## If something fails
+
+Open your Worker address in a browser (for example `https://studyhub-worker.YOURNAME.workers.dev`). It lists what is set and what is missing. Fix every line that says `missing`, then `npx wrangler deploy` again.
+
+- **"server" error on Notify me when closed**: almost always the database tables were not created in the *remote* database. Run `npx wrangler d1 execute studyhub --remote --file=schema.sql`.
+- **"The provided client secret is invalid"**: the secret does not belong to the client id in use. The same OAuth client must be used in three places: `VITE_GOOGLE_CLIENT_ID` (app), `GOOGLE_CLIENT_ID` (wrangler.toml) and the secret you stored. Reset the secret in Google Cloud, copy it again without spaces, and run `npx wrangler secret put GOOGLE_CLIENT_SECRET`.
+- **`wrangler tail` times out**: that is your network blocking Cloudflare's log connection, not a Worker problem. Use the Cloudflare dashboard instead (Workers & Pages > studyhub-worker > Logs), try another network or a VPN, or just use the address check above.

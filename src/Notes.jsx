@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { addTodoToday, clamp, getStore, notify, setStore, uid, useStore } from './shared'
 import { play } from './sound'
+import BlockEditor, { blocksText, blocksToMarkdown, mdToBlocks, newBlock, ops } from './BlockEditor'
 
 /* ============================================================
    Notes, in the spirit of Google Keep
@@ -14,20 +15,28 @@ const COLORS = { default: null, red: 4, orange: 28, yellow: 48, green: 140, teal
 const COLOR_KEYS = Object.keys(COLORS)
 const TRASH_DAYS = 7
 
+/* A note is a title plus "blocks" (see BlockEditor.jsx): text, headings, bullets, numbers, checkboxes, toggles, code,
+   nested as deep as you like and mixed freely. Older notes (a text body or a checklist) are converted on first load. */
+const flat = list => (list || []).flatMap(b => [b, ...flat(b.kids)])
+const reid = list => list.map(b => ({ ...b, id: uid(), ...(b.kids ? { kids: reid(b.kids) } : {}) }))
 const blank = () => ({
-    id: uid(), title: '', body: '', items: null, color: 'default', pinned: false, archived: false,
+    id: uid(), title: '', blocks: [newBlock('p')], color: 'default', pinned: false, archived: false,
     trashed: null, labels: [], created: Date.now(), edited: Date.now(),
 })
-const isBlank = n => !n.title.trim() && !(n.items ? n.items.some(i => i.t.trim()) : n.body.trim())
-const toList = n => ({
-    ...n,
-    body: '',
-    items: n.body.split('\n').filter(l => l.trim()).map(t => ({ id: uid(), t, done: false })).concat(n.body.trim() ? [] : [{ id: uid(), t: '', done: false }]),
-})
-const toText = n => ({ ...n, items: null, body: n.items.map(i => i.t).filter(Boolean).join('\n') })
+// What it does: converts an old note (body text or checklist items) into blocks. Notes that already have blocks pass through.
+// When to use it: on anything that may come from older data, a template or an import.
+const normalize = n => {
+    if (Array.isArray(n.blocks)) return n
+    const { body, items, ...rest } = n
+    const blocks = items ? items.map(i => ({ ...newBlock('todo', i.t), done: !!i.done, ...(i.sent ? { sent: true } : {}) })) : mdToBlocks(body || '')
+    return { ...rest, blocks: blocks.length ? blocks : [newBlock('p')] }
+}
+const blocksOf = n => normalize(n).blocks
+const isBlank = n => !n.title.trim() && !blocksText(blocksOf(n)).trim()
+const openTodos = n => flat(blocksOf(n)).filter(b => b.type === 'todo' && !b.done && !b.sent && (b.text || '').trim())
 const cardStyle = c => (COLORS[c] != null ? { '--h': COLORS[c] } : undefined)
 
-const seedNotes = () => {
+const rawSeed = () => {
     const now = Date.now()
     return [
         {
@@ -38,7 +47,7 @@ const seedNotes = () => {
         { ...blank(), id: 'n3', title: 'Project idea', body: 'A flashcards app that turns my own notes into quiz questions. Start with a simple spaced repetition schedule.\nhttps://developer.mozilla.org', color: 'green', labels: ['Ideas'], created: now - 1000 },
     ]
 }
-
+const seedNotes = () => rawSeed().map(normalize)
 
 /* ---------- review reminders, templates, markdown ---------- */
 const REVIEW_STEPS = [1, 3, 7, 14, 30] // days until the next review, growing each time (spaced repetition)
@@ -60,8 +69,7 @@ const mdOf = n => {
     const lines = [`# ${n.title || 'Untitled note'}`]
     if (n.labels.length) lines.push(`Labels: ${n.labels.join(', ')}`)
     lines.push('')
-    if (n.items) n.items.filter(i => i.t.trim()).forEach(i => lines.push(`- [${i.done ? 'x' : ' '}] ${i.t}`))
-    else if (n.body.trim()) lines.push(n.body.trim())
+    lines.push(blocksToMarkdown(blocksOf(n)))
     return lines.join('\n')
 }
 const download = (name, text) => {
@@ -83,12 +91,8 @@ const parseMd = (text, fallback) => {
         const li = lines.findIndex(l => /^labels:/i.test(l.trim()))
         if (li >= 0 && li < 2) labels = lines.splice(li, 1)[0].replace(/^\s*labels:/i, '').split(',').map(x => x.trim()).filter(Boolean)
         const body = lines.join('\n').trim()
-        const rows = body.split('\n').filter(l => l.trim())
-        const isList = rows.length > 0 && rows.every(l => /^\s*[-*] \[[ xX]\] /.test(l))
-        const n = { ...blank(), title, labels }
-        if (isList) n.items = rows.map(l => ({ id: uid(), t: l.replace(/^\s*[-*] \[[ xX]\] /, ''), done: /\[[xX]\]/.test(l) }))
-        else n.body = body
-        return n
+        const blocks = mdToBlocks(body)
+        return { ...blank(), title, labels, blocks: blocks.length ? blocks : [newBlock('p')] }
     })
 }
 
@@ -149,7 +153,7 @@ function AutoText({ value, onChange, placeholder, autoFocus }) {
 }
 
 /* ---------- the actions row used by cards, the composer and the editor ---------- */
-function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onDuplicate, onRestore, onDeleteForever, onSendTodos, onExport }) {
+function Toolbar({ note, onChange, labels, onArchive, onTrash, onDuplicate, onRestore, onDeleteForever, onSendTodos, onExport }) {
     const [pop, setPop] = useState(null)
     const [linkMap, setLinkMap] = useState((note.link && note.link.map) || '')
     const open = kind => e => setPop({ kind, anchor: e.currentTarget })
@@ -170,13 +174,12 @@ function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onD
     }
     return (
         <div className="kp-tools">
-            {onToggleList && <button className="icon-btn" onClick={onToggleList} title={note.items ? 'Hide checkboxes' : 'Show checkboxes'} aria-label="Toggle checklist">☑</button>}
             <button className={'icon-btn' + (note.pinned ? ' on' : '')} onClick={() => { play('pin'); onChange({ ...note, pinned: !note.pinned, archived: false }) }} title={note.pinned ? 'Unpin' : 'Pin'} aria-pressed={note.pinned} aria-label="Pin">📌</button>
             <button className="icon-btn" onClick={open('color')} title="Colour" aria-label="Change colour">🎨</button>
             <button className="icon-btn" onClick={open('label')} title="Labels" aria-label="Edit labels">🏷️</button>
             <button className={'icon-btn' + (note.link ? ' on' : '')} onClick={open('link')} title="Link to a roadmap topic" aria-label="Link to a roadmap topic">🗺️</button>
             <button className={'icon-btn' + (note.review ? ' on' : '')} onClick={open('review')} title="Review reminder" aria-label="Review reminder">🔁</button>
-            {onSendTodos && note.items && note.items.some(i => !i.done && !i.sent && i.t.trim()) && <button className="icon-btn" onClick={onSendTodos} title="Add open items to today's todos" aria-label="Add open items to today's todos">📅</button>}
+            {onSendTodos && openTodos(note).length > 0 && <button className="icon-btn" onClick={onSendTodos} title="Add open items to today's todos" aria-label="Add open items to today's todos">📅</button>}
             {onExport && <button className="icon-btn" onClick={onExport} title="Export as Markdown" aria-label="Export as Markdown">⬇</button>}
             {onDuplicate && <button className="icon-btn" onClick={onDuplicate} title="Duplicate" aria-label="Duplicate">⧉</button>}
             {onArchive && <button className="icon-btn" onClick={onArchive} title={note.archived ? 'Unarchive' : 'Archive'} aria-label="Archive">🗄️</button>}
@@ -250,62 +253,13 @@ function Toolbar({ note, onChange, labels, onToggleList, onArchive, onTrash, onD
     )
 }
 
-/* ---------- title + body or checklist ---------- */
+/* ---------- title + mixed blocks ---------- */
 function NoteEditor({ note, onChange, autoFocus }) {
-    const focusId = useRef(null)
     const patch = p => onChange({ ...note, ...p, edited: Date.now() })
-
-    useEffect(() => {
-        if (!focusId.current) return
-        const el = document.querySelector(`[data-item="${focusId.current}"]`)
-        if (el) el.focus()
-        focusId.current = null
-    })
-
-    const setItem = (id, p) => patch({ items: note.items.map(i => (i.id === id ? { ...i, ...p } : i)) })
-    const addAfter = id => {
-        const it = { id: uid(), t: '', done: false }
-        const i = note.items.findIndex(x => x.id === id)
-        const next = [...note.items]
-        next.splice(i < 0 ? next.length : i + 1, 0, it)
-        focusId.current = it.id
-        patch({ items: next })
-    }
-    const removeItem = (id, focusPrev) => {
-        const i = note.items.findIndex(x => x.id === id)
-        if (focusPrev && i > 0) focusId.current = note.items[i - 1].id
-        patch({ items: note.items.filter(x => x.id !== id) })
-    }
-
-    const row = it => (
-        <div key={it.id} className={'kp-item' + (it.done ? ' done' : '')}>
-            <input type="checkbox" checked={it.done} onChange={e => { setItem(it.id, { done: e.target.checked }); play(e.target.checked ? 'check' : 'uncheck') }} aria-label="Done" />
-            <input data-item={it.id} className="kp-itext" value={it.t} placeholder="List item" aria-label="List item" onChange={e => setItem(it.id, { t: e.target.value })}
-                onKeyDown={e => {
-                    if (e.key === 'Enter') { e.preventDefault(); addAfter(it.id) }
-                    if (e.key === 'Backspace' && !it.t && note.items.length > 1) { e.preventDefault(); removeItem(it.id, true) }
-                }} />
-            <button className="icon-btn" onClick={() => { play('delete'); removeItem(it.id, false) }} aria-label="Delete item">×</button>
-        </div>
-    )
-
     return (
         <div className="kp-editor">
-            <input className="kp-title" placeholder="Title" value={note.title} onChange={e => patch({ title: e.target.value })} autoFocus={autoFocus && !note.items} aria-label="Title" />
-            {note.items ? (
-                <div>
-                    {note.items.filter(i => !i.done).map(row)}
-                    <button className="kp-additem" onClick={() => addAfter(null)}>+ List item</button>
-                    {note.items.some(i => i.done) && (
-                        <>
-                            <p className="kp-doneh muted small">{note.items.filter(i => i.done).length} completed</p>
-                            {note.items.filter(i => i.done).map(row)}
-                        </>
-                    )}
-                </div>
-            ) : (
-                <AutoText value={note.body} onChange={v => patch({ body: v })} placeholder="Take a note…" autoFocus={autoFocus} />
-            )}
+            <input className="kp-title" placeholder="Title" value={note.title} onChange={e => patch({ title: e.target.value })} autoFocus={autoFocus} aria-label="Title" />
+            <BlockEditor label="Note content" value={blocksOf(note)} onChange={blocks => patch({ blocks })} />
         </div>
     )
 }
@@ -348,13 +302,13 @@ function Composer({ labels, onAdd, onNewLabel }) {
         return (
             <div className="kp-compose card" ref={ref}>
                 <button className="kp-fake" onClick={() => setOpen(true)}>Take a note…</button>
-                <button className="icon-btn" onClick={() => { setDraft(toList(blank())); setOpen(true) }} title="New list" aria-label="New list">☑</button>
+                <button className="icon-btn" onClick={() => { setDraft({ ...blank(), blocks: [newBlock('todo')] }); setOpen(true) }} title="New checklist" aria-label="New list">☑</button>
                 <button className="icon-btn" onClick={e => setTpl(e.currentTarget)} title="New note from a template" aria-label="New note from a template">▤</button>
                 {tpl && (
                     <Pop anchor={tpl} onClose={() => setTpl(null)} width={220}>
                         <p className="muted small kp-pad">Start from a template</p>
                         {TEMPLATES.map(t => (
-                            <button key={t.name} className="kp-item kp-pick" onClick={() => { setDraft({ ...blank(), ...t.make() }); setTpl(null); setOpen(true) }}>{t.icon} {t.name}</button>
+                            <button key={t.name} className="kp-item kp-pick" onClick={() => { setDraft(normalize({ ...blank(), blocks: undefined, ...t.make() })); setTpl(null); setOpen(true) }}>{t.icon} {t.name}</button>
                         ))}
                     </Pop>
                 )}
@@ -366,8 +320,7 @@ function Composer({ labels, onAdd, onNewLabel }) {
             <NoteEditor note={draft} onChange={setDraft} autoFocus />
             {draft.labels.length > 0 && <div className="kp-labels">{draft.labels.map(l => <span key={l} className="kp-chip">{l}</span>)}</div>}
             <div className="kp-foot">
-                <Toolbar note={draft} onChange={change} labels={labels}
-                    onToggleList={() => setDraft(draft.items ? toText(draft) : toList(draft))} />
+                <Toolbar note={draft} onChange={change} labels={labels} />
                 <button className="btn sm ghost" onClick={finish}>Close</button>
             </div>
         </div>
@@ -375,30 +328,48 @@ function Composer({ labels, onAdd, onNewLabel }) {
 }
 
 /* ---------- a note in the grid ---------- */
-function NoteCard({ note, labels, onOpen, onChange, onNewLabel, actions }) {
-    const open = note.items ? note.items.filter(i => !i.done) : []
-    const done = note.items ? note.items.filter(i => i.done) : []
+/* A small, read-only picture of the blocks for the card. Checkboxes work right on the card. */
+function Preview({ note, onToggle, disabled }) {
+    const blocks = blocksOf(note)
+    const total = flat(blocks).length
+    let left = 16
+    const walk = (list, depth) => {
+        let n = 0
+        return list.map(b => {
+            n = b.type === 'number' ? n + 1 : 0
+            if (left <= 0) return null
+            left -= 1
+            return (
+                <div key={b.id}>
+                    <div className={'kp-b t-' + b.type + (b.done ? ' done' : '')} style={{ paddingLeft: depth * 16 }}>
+                        {b.type === 'todo' && <input type="checkbox" checked={!!b.done} disabled={disabled} aria-label={`Mark "${b.text}" as done`} onClick={e => e.stopPropagation()} onChange={e => onToggle(b.id, e.target.checked)} />}
+                        {b.type === 'bullet' && <span className="kp-mk">•</span>}
+                        {b.type === 'number' && <span className="kp-mk">{n}.</span>}
+                        {b.type === 'toggle' && <span className="kp-mk">▸</span>}
+                        {b.type === 'divider' ? <hr /> : b.type === 'code' ? <pre>{b.text}</pre> : <span className="kp-bt">{linkify(b.text || '')}</span>}
+                    </div>
+                    {b.kids && b.kids.length > 0 && walk(b.kids, depth + 1)}
+                </div>
+            )
+        })
+    }
     return (
-        <article className="kp-card card" data-c={note.color} style={cardStyle(note.color)}>
+        <div className="kp-list">
+            {walk(blocks, 0)}
+            {total > 16 && <p className="muted small">+ {total - 16} more</p>}
+        </div>
+    )
+}
+
+function NoteCard({ note, labels, onOpen, onChange, onNewLabel, actions, dnd }) {
+    return (
+        <article className={'kp-card card' + (dnd && dnd.over ? ' drop-' + dnd.over : '') + (dnd && dnd.dragging ? ' dragging' : '')} data-c={note.color} style={cardStyle(note.color)}
+            draggable={!!dnd} onDragStart={dnd && dnd.start} onDragOver={dnd && dnd.hover} onDragLeave={dnd && dnd.leave} onDrop={dnd && dnd.drop} onDragEnd={dnd && dnd.end}>
             <div className="kp-hit" onClick={onOpen} role="button" tabIndex={0} aria-label={`Open note ${note.title || 'without title'}`}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}>
                 {note.pinned && !note.trashed && <span className="kp-pin" title="Pinned">📌</span>}
                 {note.title && <h3>{note.title}</h3>}
-                {note.items ? (
-                    <div className="kp-list">
-                        {open.slice(0, 8).map(i => (
-                            <div key={i.id} className="kp-item">
-                                <input type="checkbox" checked={false} disabled={!!note.trashed} aria-label={`Mark "${i.t}" as done`} onClick={e => e.stopPropagation()}
-                                    onChange={() => { play('check'); onChange({ ...note, items: note.items.map(x => (x.id === i.id ? { ...x, done: true } : x)), edited: Date.now() }) }} />
-                                <span>{i.t}</span>
-                            </div>
-                        ))}
-                        {open.length > 8 && <p className="muted small">+ {open.length - 8} more</p>}
-                        {done.length > 0 && <p className="muted small">✓ {done.length} completed item{done.length > 1 ? 's' : ''}</p>}
-                    </div>
-                ) : (
-                    note.body && <p className="kp-text">{linkify(note.body)}</p>
-                )}
+                <Preview note={note} disabled={!!note.trashed} onToggle={(id, v) => { const bl = structuredClone(blocksOf(note)); ops.setDone(bl, id, v); play(v ? 'check' : 'uncheck'); onChange({ ...note, blocks: bl, edited: Date.now() }) }} />
                 {isBlank(note) && <p className="muted small">Empty note</p>}
                 {note.labels.length > 0 && <div className="kp-labels">{note.labels.map(l => <span key={l} className="kp-chip">{l}</span>)}</div>}
                 {(note.link || note.review) && !note.trashed && (
@@ -485,6 +456,44 @@ export default function Notes() {
         }
     }, [])
 
+    // Convert notes written in the old format (text body or checklist) to blocks, once
+    useEffect(() => {
+        if (notes.some(n => !Array.isArray(n.blocks))) updateNotes(list => { list.forEach((n, i) => { if (!Array.isArray(n.blocks)) list[i] = normalize(n) }) })
+    }, [notes]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Drag and drop like Google Keep: drop a card on another one to put it before or after it
+    const dragId = useRef(null)
+    const [dragging, setDragging] = useState(null)
+    const [over, setOver] = useState(null) // { id, side: 'before' | 'after' }
+    const moveNote = (fromId, toId, after) => updateNotes(list => {
+        const from = list.findIndex(n => n.id === fromId)
+        if (from < 0 || fromId === toId) return
+        const [n] = list.splice(from, 1)
+        const to = list.findIndex(x => x.id === toId)
+        if (to < 0) { list.splice(from, 0, n); return }
+        n.pinned = !!list[to].pinned // dropping into the pinned group pins it, like Keep
+        list.splice(to + (after ? 1 : 0), 0, n)
+    })
+    const dndFor = n => ({
+        dragging: dragging === n.id,
+        over: over && over.id === n.id ? over.side : '',
+        start: e => { dragId.current = n.id; setDragging(n.id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', n.id) },
+        hover: e => {
+            if (!dragId.current || dragId.current === n.id) return
+            e.preventDefault()
+            const r = e.currentTarget.getBoundingClientRect()
+            const side = e.clientY > r.top + r.height / 2 ? 'after' : 'before'
+            setOver(cur => (cur && cur.id === n.id && cur.side === side ? cur : { id: n.id, side }))
+        },
+        leave: e => { if (!e.currentTarget.contains(e.relatedTarget)) setOver(cur => (cur && cur.id === n.id ? null : cur)) },
+        drop: e => {
+            e.preventDefault()
+            if (dragId.current) { moveNote(dragId.current, n.id, over && over.id === n.id && over.side === 'after'); play('tick') }
+            dragId.current = null; setDragging(null); setOver(null)
+        },
+        end: () => { dragId.current = null; setDragging(null); setOver(null) },
+    })
+
     // Empty the trash after 7 days
     useEffect(() => {
         const limit = Date.now() - TRASH_DAYS * 86400000
@@ -522,15 +531,18 @@ export default function Notes() {
     }
     const duplicate = n => {
         play('add')
-        save({ ...n, id: uid(), title: n.title ? n.title + ' (copy)' : '', pinned: false, created: Date.now(), edited: Date.now(), items: n.items ? n.items.map(i => ({ ...i, id: uid() })) : null })
+        save({ ...n, id: uid(), title: n.title ? n.title + ' (copy)' : '', pinned: false, created: Date.now(), edited: Date.now(), blocks: reid(structuredClone(blocksOf(n))) })
     }
     const forever = id => updateNotes(list => list.filter(n => n.id !== id))
     // Turn the open items of a checklist into todos for today (each item is sent once)
     const sendToday = n => {
-        const open = (n.items || []).filter(i => !i.done && !i.sent && i.t.trim())
+        const open = openTodos(n)
         if (!open.length) return
-        open.forEach(i => addTodoToday({ text: i.t.trim(), type: 'task' }))
-        save({ ...n, items: n.items.map(i => (open.includes(i) ? { ...i, sent: true } : i)), edited: Date.now() })
+        open.forEach(b => addTodoToday({ text: b.text.trim(), type: 'task' }))
+        const ids = new Set(open.map(b => b.id))
+        const bl = structuredClone(blocksOf(n))
+        flat(bl).forEach(b => { if (ids.has(b.id)) b.sent = true })
+        save({ ...n, blocks: bl, edited: Date.now() })
         play('add')
         notify({ title: `Added ${open.length} todo${open.length > 1 ? 's' : ''} to today`, body: n.title || 'From your note', icon: '📅' })
     }
@@ -554,7 +566,7 @@ export default function Notes() {
     }
 
     const q = query.trim().toLowerCase()
-    const matches = n => !q || [n.title, n.body, ...(n.items || []).map(i => i.t), ...n.labels].join(' ').toLowerCase().includes(q)
+    const matches = n => !q || [n.title, blocksText(blocksOf(n)), ...n.labels].join(' ').toLowerCase().includes(q)
     const inView = n => {
         if (view === 'trash') return !!n.trashed
         if (n.trashed) return false
@@ -583,7 +595,7 @@ export default function Notes() {
     })
 
     const cardFor = n => (
-        <NoteCard key={n.id} note={n} labels={labels} onOpen={() => !n.trashed && setEditId(n.id)} onChange={save} onNewLabel={addLabel}
+        <NoteCard key={n.id} note={n} labels={labels} dnd={n.trashed ? undefined : dndFor(n)} onOpen={() => !n.trashed && setEditId(n.id)} onChange={save} onNewLabel={addLabel}
             actions={n.trashed ? { onRestore: () => { save({ ...n, trashed: null }); play('undo') }, onDeleteForever: () => { forever(n.id); play('delete') } }
                 : { onArchive: () => archive(n), onTrash: () => trash(n), onDuplicate: () => duplicate(n), onSendTodos: () => sendToday(n) }} />
     )
@@ -649,7 +661,6 @@ export default function Notes() {
                         {(editing.link || editing.review) && <div className="kp-labels">{editing.link && topicTitle(editing.link) && <button className="kp-chip kp-linkchip" onClick={() => openLinked(editing.link)}>🗺️ {topicTitle(editing.link)}</button>}{editing.review && <span className={'kp-chip' + (reviewDue(editing) ? ' kp-due' : '')}>🔁 Review {fmtDue(editing.review.due)}</span>}</div>}
                         <div className="kp-foot">
                             <Toolbar note={editing} labels={labels} onChange={(n, nl) => { save(n); if (nl) addLabel(nl) }}
-                                onToggleList={() => save(editing.items ? toText(editing) : toList(editing))}
                                 onArchive={() => { archive(editing); setEditId(null) }}
                                 onTrash={() => { trash(editing); setEditId(null) }} onDuplicate={() => duplicate(editing)}
                                 onSendTodos={() => sendToday(editing)} onExport={() => exportNotes([editing])} />
@@ -706,6 +717,14 @@ const CSS = `
 .kp-text{margin:0;white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:12;-webkit-box-orient:vertical;overflow:hidden}
 .kp-text a{color:var(--ac)}
 .kp-list p{margin:2px 0}
+.kp-b{display:flex;gap:7px;align-items:flex-start;padding:1px 0;word-break:break-word;line-height:1.45}
+.kp-b input{margin-top:4px;flex:none}.kp-mk{flex:none;min-width:14px;color:var(--mu);font-weight:700}
+.kp-b.done .kp-bt{text-decoration:line-through;color:var(--mu)}
+.kp-b[class*=" t-h"]{font-weight:700;margin-top:4px}.kp-b.t-h1{font-size:18px}.kp-b.t-h2{font-size:16.5px}.kp-b.t-h3,.kp-b.t-h4,.kp-b.t-h5,.kp-b.t-h6{font-size:15px}
+.kp-b pre{margin:0;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid var(--ln);border-radius:6px;padding:4px 6px;white-space:pre-wrap;flex:1;min-width:0}
+.kp-b hr{flex:1;border:0;border-top:1px solid var(--ln)}
+.kp-grid .kp-card.drop-before{box-shadow:0 -4px 0 var(--ac)}.kp-grid .kp-card.drop-after{box-shadow:0 4px 0 var(--ac)}
+.kp-card.dragging{opacity:.45}.kp-grid .kp-card[draggable=true]{cursor:grab}
 .kp-grid .kp-tools{opacity:0;transition:opacity .15s;margin:6px -6px 0}
 .kp-grid .kp-card:hover .kp-tools,.kp-grid .kp-card:focus-within .kp-tools{opacity:1}
 @media(hover:none){.kp-grid .kp-tools{opacity:1}}

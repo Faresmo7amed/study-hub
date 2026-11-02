@@ -501,7 +501,7 @@ const CSS = `
 .app-menu button span{width:24px;text-align:center;font-size:18px}
 .app-shell{display:flex;align-items:flex-start;max-width:2120px;margin:0 auto}
 .app-shell>main{flex:1;min-width:0}
-.rail{display:none;flex:none;width:260px;gap:14px;align-content:start;position:sticky;top:70px;max-height:calc(100vh - 78px);overflow:auto;padding:20px 0 20px 16px;scrollbar-width:thin}
+.rail{display:none;flex:none;width:260px;gap:14px;align-content:start;position:sticky;top:70px;max-height:calc(100vh - 78px);overflow:auto;padding:20px 12px 20px 16px;scrollbar-width:thin}
 .rail.r{padding:20px 16px 20px 0}
 @media(min-width:1100px){.rail.l{display:grid}.app-railbtn{display:inline-block}}
 @media(min-width:1400px){.rail.r{display:grid}}

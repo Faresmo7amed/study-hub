@@ -53,7 +53,7 @@ async function googleToken(body, env) {
     const res = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, ...body }),
+        body: new URLSearchParams({ client_id: String(env.GOOGLE_CLIENT_ID || '').trim(), client_secret: String(env.GOOGLE_CLIENT_SECRET || '').trim(), ...body }),
     })
     return { status: res.status, data: await res.json().catch(() => ({})) }
 }
@@ -62,7 +62,19 @@ async function googleToken(body, env) {
 async function handle(request, env, cors) {
     const url = new URL(request.url)
     const path = url.pathname.replace(/\/+$/, '') || '/'
-    if (path === '/') return json({ ok: true, name: 'studyhub-worker' }, 200, cors)
+    // Open the Worker address in a browser to see what is missing (no secrets are shown)
+    if (path === '/') {
+        let tables = 'missing: run the schema.sql command with --remote'
+        try { await env.DB.prepare('SELECT 1 FROM subs LIMIT 1').first(); await env.DB.prepare('SELECT 1 FROM gtokens LIMIT 1').first(); tables = 'ok' } catch { /* keeps the message */ }
+        return json({
+            ok: true, name: 'studyhub-worker', database: env.DB ? tables : 'missing: add the d1_databases block with the real database_id',
+            vapidPrivateKey: env.VAPID_PRIVATE_JWK ? 'set' : 'missing: npx wrangler secret put VAPID_PRIVATE_JWK',
+            vapidPublicKey: env.VAPID_PUBLIC && !/PASTE/.test(env.VAPID_PUBLIC) ? 'set' : 'missing: VAPID_PUBLIC in wrangler.toml',
+            googleClientId: env.GOOGLE_CLIENT_ID && !/PASTE/.test(env.GOOGLE_CLIENT_ID) ? 'set' : 'missing: GOOGLE_CLIENT_ID in wrangler.toml',
+            googleClientSecret: env.GOOGLE_CLIENT_SECRET ? 'set' : 'missing: npx wrangler secret put GOOGLE_CLIENT_SECRET',
+            firebaseProjectId: env.FIREBASE_PROJECT_ID && !/PASTE/.test(env.FIREBASE_PROJECT_ID) ? 'set' : 'missing: FIREBASE_PROJECT_ID in wrangler.toml',
+        }, 200, cors)
+    }
 
     const auth = (request.headers.get('Authorization') || '').replace(/^Bearer /, '')
     const me = await verifyFirebaseToken(auth, env.FIREBASE_PROJECT_ID)
@@ -125,7 +137,7 @@ async function handle(request, env, cors) {
     if (path === '/google/code' && request.method === 'POST') {
         if (!env.GOOGLE_CLIENT_SECRET) return json({ error: 'not configured' }, 501, cors)
         const r = await googleToken({ code: clip(body.code, 600), grant_type: 'authorization_code', redirect_uri: 'postmessage' }, env)
-        if (!r.data.access_token) return json({ error: r.data.error_description || r.data.error || 'Google refused the code' }, 400, cors)
+        if (!r.data.access_token) return json({ error: r.data.error_description || r.data.error || 'Google refused the code', hint: r.data.error === 'invalid_client' || /secret/i.test(r.data.error_description || '') ? 'client_id_or_secret_mismatch' : undefined }, 400, cors)
         if (r.data.refresh_token) {
             await env.DB.prepare('INSERT INTO gtokens (uid, refresh, updated) VALUES (?, ?, ?) ON CONFLICT(uid) DO UPDATE SET refresh = excluded.refresh, updated = excluded.updated')
                 .bind(me.uid, r.data.refresh_token, Date.now()).run()

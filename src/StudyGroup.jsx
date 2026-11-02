@@ -8,7 +8,6 @@ import * as fb from './firebase'
 import { getSyncUser, useSyncState } from './sync'
 import { play } from './sound'
 import { cheer, useLive } from './live'
-import PresenceSidebar from './PresenceSidebar'
 
 /* eslint-disable react-refresh/only-export-components */
 /* ============================================================
@@ -1064,7 +1063,6 @@ const removeShare = id => {
     }
 
     return (
-        <div className="sg-page">
         <div className="sg">
             <style>{CSS}</style>
             <header className="sg-head">
@@ -1228,8 +1226,6 @@ const removeShare = id => {
             {editing && <ProfileModal name={s.name} profile={s.profile} onSave={saveProfile} onClose={() => setEditing(false)} />}
             {profileRow && <ProfileView r={profileRow} isMe={profileRow.uid === uid} cheerCount={cheered[profileRow.uid] || 0} onCheer={sendCheer} onClose={() => setProfileId(null)} />}
         </div>
-        <PresenceSidebar uid={uid} activeId={activeId} />
-        </div>
     )
 }
 
@@ -1247,9 +1243,6 @@ const CSS = `
 .sg-subs{list-style:none;margin:0;padding:0;display:grid;gap:8px}.sg-subs li{display:grid;grid-template-columns:1fr auto;gap:2px 8px}.sg-subs .bar{grid-column:1/-1;margin:0}
 .sg-hist summary{cursor:pointer}.sg-hl{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
 .sg-hl li{display:flex;gap:6px 14px;flex-wrap:wrap;padding:6px 10px;border-radius:8px;background:var(--sf2);font-size:13px}.sg-hl li b{min-width:150px}
-.sg-page{display:flex;gap:18px;align-items:flex-start;max-width:1900px;margin:auto;padding-right:20px}
-.sg-page>.sg{flex:1;min-width:0;margin:0}
-@media (max-width:1100px){.sg-page{flex-direction:column-reverse;align-items:stretch;padding:0 20px}.sg-page>.sg{padding-left:0;padding-right:0}}
 .sg{max-width:1600px;margin:auto;padding:24px 20px 90px;display:grid;gap:18px}
 .sg-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.sg-head h1{font-size:32px}
 .sg-box{padding:20px;display:grid;gap:10px}

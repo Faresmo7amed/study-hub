@@ -1,3 +1,4 @@
+import PresenceCard from './PresenceSidebar'
 import { useMemo, useState } from 'react'
 import {
     DAYS, STUDY_DEFAULT, TYPES, TYPE_KEYS, addDays, addTodoToday, dayIndex, hms, isHttp, iso, normalizeUrl, parseISO, quoteOfDay,
@@ -297,6 +298,7 @@ export function RightRail({ sheet = false }) {
                 <p className="small muted" style={{ margin: 0 }}>{lvl.into}/{lvl.span} XP to level {lvl.level + 1}</p>
             </section>
             <MiniCalendar />
+            <PresenceCard />
             <section className="card rail-card">
                 <h3>Upcoming</h3>
                 {!upcoming.length && <p className="muted small" style={{ margin: 0 }}>No upcoming events.</p>}

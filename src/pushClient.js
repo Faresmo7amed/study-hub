@@ -26,7 +26,7 @@ export async function workerCall(path, method = 'GET', body) {
         body: body ? JSON.stringify(body) : undefined,
     })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw Object.assign(new Error(data.error || `The Worker answered ${res.status}`), { status: res.status, code: data.error })
+    if (!res.ok) throw Object.assign(new Error(data.detail ? `${data.error}: ${data.detail}` : data.error || `The Worker answered ${res.status}`), { status: res.status, code: data.error })
     return data
 }
 
