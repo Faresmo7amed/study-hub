@@ -370,5 +370,20 @@ export const RAIL_CSS = `
 .sl-list{display:flex;gap:6px;flex-wrap:wrap}
 .sl-chip{display:inline-flex;gap:5px;align-items:center;border:1px solid var(--ln);background:var(--sf2);border-radius:999px;padding:3px 11px;font-size:13px;font-weight:500;color:var(--tx);text-decoration:none;transition:border-color .15s,transform .15s}
 .sl-chip:hover{border-color:var(--ac);transform:translateY(-1px)}
+/* Full width on desktop and tablet: the side bars sit at the edges and the page content takes all the space between them */
+@media(min-width:641px){
+.app-shell{max-width:none!important}
+.app-top-in,.dash,.kp,.sg,.rm,.sg-fullbody{max-width:none!important}
+.dash,.kp,.sg,.rm{padding-left:14px!important;padding-right:14px!important}
+.rail{padding-left:12px!important}.rail.r{padding-right:12px!important;padding-left:0!important}
+}
+/* Study timer card: nothing may leave the card */
+.rail-study{overflow:hidden}
+.rail-study .row{flex-wrap:wrap;min-width:0}
+.rail-study .row>h3{min-width:0}
+.rail-study .btn{min-width:0;padding-left:8px;padding-right:8px;white-space:normal}
+.rail-study .row>.btn.grow{flex:1 1 80px}
+.rail-clock{font-size:clamp(26px,2.4vw,34px);overflow-wrap:anywhere}
+.rail-study .bar,.rail-study p{max-width:100%}
 .rail.sheet{display:grid!important;position:static;width:auto;max-height:none;overflow:visible;padding:0}
 `
