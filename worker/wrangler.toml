@@ -6,7 +6,7 @@ compatibility_date = "2025-01-01"
 crons = ["* * * * *"]
 
 [[d1_databases]]
-binding = "studyhub"
+binding = "DB"
 database_name = "studyhub"
 database_id = "9b6b35ba-89cb-47f3-8aac-ab74ad4b255e"
 
