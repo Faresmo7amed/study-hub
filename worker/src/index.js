@@ -71,7 +71,11 @@ async function handle(request, env, cors) {
             vapidPrivateKey: env.VAPID_PRIVATE_JWK ? 'set' : 'missing: npx wrangler secret put VAPID_PRIVATE_JWK',
             vapidPublicKey: env.VAPID_PUBLIC && !/PASTE/.test(env.VAPID_PUBLIC) ? 'set' : 'missing: VAPID_PUBLIC in wrangler.toml',
             googleClientId: env.GOOGLE_CLIENT_ID && !/PASTE/.test(env.GOOGLE_CLIENT_ID) ? 'set' : 'missing: GOOGLE_CLIENT_ID in wrangler.toml',
-            googleClientSecret: env.GOOGLE_CLIENT_SECRET ? 'set' : 'missing: npx wrangler secret put GOOGLE_CLIENT_SECRET',
+            googleClientSecret: env.GOOGLE_CLIENT_SECRET ? (() => {
+                const v = String(env.GOOGLE_CLIENT_SECRET)
+                const t = v.trim()
+                return `set: ${t.length} characters, ${t.startsWith('GOCSPX-') ? 'starts with GOCSPX- (correct)' : 'does NOT start with GOCSPX- (wrong value)'}, ends with ...${t.slice(-4)}${v !== t ? ', has stray spaces (trimmed)' : ''}. A real secret is 35 characters.`
+            })() : 'missing: npx wrangler secret put GOOGLE_CLIENT_SECRET',
             firebaseProjectId: env.FIREBASE_PROJECT_ID && !/PASTE/.test(env.FIREBASE_PROJECT_ID) ? 'set' : 'missing: FIREBASE_PROJECT_ID in wrangler.toml',
         }, 200, cors)
     }
