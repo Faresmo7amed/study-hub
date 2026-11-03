@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- this file also exports shared helpers; moving them out means editing every file that imports them */
 import { useEffect, useMemo, useState } from 'react'
 import BlockEditor, { cleanBlocks, countTodos } from './BlockEditor'
 import {

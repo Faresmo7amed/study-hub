@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- this file also exports shared helpers; moving them out means editing every file that imports them */
 import { useEffect, useRef, useState } from 'react'
 import { MONTH_TIERS, activeDaysIn, confetti, dayIndex, emptyWeek, getStore, iso, monthKey, notify, onStoreChange, setStore, tierState, uid, weekStart } from './shared'
 import { play } from './sound'

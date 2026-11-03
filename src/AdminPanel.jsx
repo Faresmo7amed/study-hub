@@ -18,7 +18,7 @@ export function AdminWatcher({ onOpen }) {
     const { user, access } = useSyncState()
     const seen = useRef(null)
     const open = useRef(onOpen)
-    open.current = onOpen
+    useEffect(() => { open.current = onOpen }, [onOpen]) // refs may only be written in effects, not while rendering
     const owner = fb.isAdmin(user) && access === 'approved'
 
     // A live listener: the owner is told the moment somebody asks, no polling and no refresh
@@ -70,7 +70,15 @@ export function AdminModal({ onClose }) {
             setLoading(false)
         }
     }, [])
-    useEffect(() => { load() }, [load])
+    // First load. State is only set inside the promise callbacks, never directly in the effect body.
+    useEffect(() => {
+        let alive = true
+        Promise.all([fb.listRequests(), fb.listApproved()])
+            .then(([r, a]) => { if (alive) { setRequests(r); setApproved(a) } })
+            .catch(e => { if (alive) setError(friendly(e)) })
+            .finally(() => { if (alive) setLoading(false) })
+        return () => { alive = false }
+    }, [])
 
     const run = async (id, fn, ok) => {
         setBusy(id)

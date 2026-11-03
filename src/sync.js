@@ -142,7 +142,7 @@ function adoptCloud(docs, uid) {
     const have = new Set(docs.map(d => d.key))
     SYNC_KEYS.forEach(k => { if (!have.has(k)) removeKey(k) })
     docs.forEach(d => {
-        try { applyRemote(d.key, JSON.parse(d.value)) } catch {}
+        try { applyRemote(d.key, JSON.parse(d.value)) } catch { /* skip a document that is not valid JSON */ }
     })
     patchMeta({
         uid,

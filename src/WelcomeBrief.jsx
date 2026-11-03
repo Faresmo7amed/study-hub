@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { STUDY_DEFAULT, getStore, setStore, systemNotify, todayISO } from './shared'
+import { STUDY_DEFAULT, getStore, setStore, systemNotify, todayISO, useNow } from './shared'
 import { useSyncState } from './sync'
 import { fmtMin } from './StudyGroup'
 import { presenceOf, useLive } from './live'
@@ -13,6 +13,7 @@ import { buildBrief } from './brief'
 export default function WelcomeBrief() {
     const sync = useSyncState()
     const live = useLive()
+    const nowMs = useNow(60000).getTime()
     const [brief, setBrief] = useState(null)
     const [waited, setWaited] = useState(false)
     const done = useRef(false)
@@ -26,16 +27,21 @@ export default function WelcomeBrief() {
     }, [ok])
 
     useEffect(() => {
-        if (!ok || done.current || !((loaded && live.ready) || waited)) return
-        done.current = true
-        if (getStore('briefday', '') === todayISO()) return
-        setStore('briefday', todayISO(), '')
-        const b = buildBrief()
-        setBrief(b)
-        if (document.visibilityState !== 'visible') {
-            const first = b.upcoming[0]
-            systemNotify('Study Hub', first ? `Next: ${first.title} · ${first.when}` : b.lines[0], { tag: 'welcome-brief' })
-        }
+        if (!ok || !((loaded && live.ready) || waited)) return undefined
+        // Runs in a timer callback, so the state is set outside the effect body. The cleanup cancels it if the inputs change first.
+        const id = setTimeout(() => {
+            if (done.current) return
+            done.current = true
+            if (getStore('briefday', '') === todayISO()) return
+            setStore('briefday', todayISO(), '')
+            const b = buildBrief()
+            setBrief(b)
+            if (document.visibilityState !== 'visible') {
+                const first = b.upcoming[0]
+                systemNotify('Study Hub', first ? `Next: ${first.title} · ${first.when}` : b.lines[0], { tag: 'welcome-brief' })
+            }
+        }, 0)
+        return () => clearTimeout(id)
     }, [ok, loaded, live.ready, waited])
 
     useEffect(() => {
@@ -46,7 +52,7 @@ export default function WelcomeBrief() {
     }, [brief])
 
     if (!brief) return null
-    const t = Date.now()
+    const t = nowMs
     const me = sync.user.uid
     const groups = getStore('studygroup', STUDY_DEFAULT).groups || []
     const friends = []

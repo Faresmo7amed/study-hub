@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- this file also exports shared helpers; moving them out means editing every file that imports them */
 import { useEffect, useRef, useState } from 'react'
 import { uid } from './shared'
 
@@ -19,7 +20,6 @@ export const BLOCK_TYPES = [
 const TYPE_IDS = BLOCK_TYPES.map(([id]) => id)
 const LISTY = ['bullet', 'number', 'todo']
 const CAN_NEST = t => t !== 'code' && t !== 'divider'
-const HAS_TEXT = t => t !== 'divider'
 
 export const newBlock = (type = 'p', text = '') => {
     const b = { id: uid(), type, text }
@@ -401,7 +401,8 @@ export default function BlockEditor({ value, onChange, readOnly = false, label =
     const focusRef = useRef(null)
     const [tick, setTick] = useState(0)
     const latest = useRef(blocks)
-    latest.current = blocks
+    // Keep the ref in step with the value the parent passes in. Refs may only be written in effects, not while rendering.
+    useEffect(() => { latest.current = Array.isArray(value) ? value : [] }, [value])
 
     const setFocus = (id, start = false) => { focusRef.current = { id, start } }
     // Every edit works on a clone, so the parent always receives a new array
@@ -536,7 +537,7 @@ const CSS = `
 .be-count{flex:none;font-size:11px;font-weight:600;color:var(--mu);border:1px solid var(--ln);border-radius:999px;padding:0 7px;margin-top:6px;white-space:nowrap}
 .be-kids{margin-left:11px;padding-left:12px;border-left:1px solid var(--ln)}
 .be-inside{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin:2px 0 4px 33px}
-.be-actions{position:absolute;right:2px;top:-16px;z-index:3;display:flex;align-items:center;gap:0;padding:2px 4px;background:var(--sf);border:1px solid var(--ln);border-radius:9px;box-shadow:0 4px 14px rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .12s}
+.be-actions{position:absolute;right:2px;bottom:calc(100% - 2px);z-index:3;display:flex;align-items:center;gap:0;padding:2px 4px;background:var(--sf);border:1px solid var(--ln);border-radius:9px;box-shadow:0 4px 14px rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .12s}
 .be-row:hover .be-actions,.be-row:focus-within .be-actions{opacity:1;pointer-events:auto}
 @media(hover:none){.be-row:hover .be-actions{opacity:0;pointer-events:none}.be-row:focus-within .be-actions{opacity:1;pointer-events:auto}}
 .be-actions select{width:auto!important;padding:2px 4px!important;font-size:12px;height:26px}

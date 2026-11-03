@@ -11,13 +11,13 @@ const when = ms => (ms ? new Date(ms).toLocaleString(undefined, { dateStyle: 'me
 export function NotificationsSection({ time, onTime }) {
     const supported = typeof window !== 'undefined' && 'Notification' in window
     const [perm, setPerm] = useState(() => (supported ? Notification.permission : 'unsupported'))
-    const [worker, setWorker] = useState('checking')
+    const [worker, setWorker] = useState(() => ('serviceWorker' in navigator ? 'checking' : 'none'))
     const [push] = useStore('push', {})
     const [pushMsg, setPushMsg] = useState('')
 
     useEffect(() => {
+        if (!('serviceWorker' in navigator)) return undefined // the state above already says 'none'
         let alive = true
-        if (!('serviceWorker' in navigator)) { setWorker('none'); return undefined }
         navigator.serviceWorker.getRegistration().then(r => { if (alive) setWorker(r ? 'ready' : 'none') }).catch(() => alive && setWorker('none'))
         return () => { alive = false }
     }, [])

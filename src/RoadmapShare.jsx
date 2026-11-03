@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import * as fb from './firebase'
 import { notify } from './shared'
 import { friendly } from './authErrors'
@@ -25,11 +25,18 @@ export default function RoadmapShare({ title, exportMap, importMap, onClose }) {
     const [msg, setMsg] = useState('')
     const [error, setError] = useState('')
 
-    const refresh = useCallback(async () => {
+    // Reloads the list of codes you made. Called after you create or stop a share.
+    const refresh = async () => {
         if (!ready) return
         try { setMine(await fb.myRoadmapShares(user.uid)) } catch (e) { setError(friendly(e)) }
+    }
+    // First load. State is only set inside the promise callbacks, never directly in the effect body.
+    useEffect(() => {
+        if (!ready) return undefined
+        let alive = true
+        fb.myRoadmapShares(user.uid).then(list => { if (alive) setMine(list) }).catch(e => { if (alive) setError(friendly(e)) })
+        return () => { alive = false }
     }, [ready, user])
-    useEffect(() => { refresh() }, [refresh])
 
     const send = async () => {
         setBusy('send')

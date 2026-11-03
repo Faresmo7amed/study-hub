@@ -115,6 +115,8 @@ const openLinked = link => {
 
 const URL_RE = /(https?:\/\/[^\s]+)/g
 const linkify = text => text.split(URL_RE).map((part, i) => (i % 2 ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>{part}</a> : part))
+// Date.now() behind a helper: it is only ever called from event handlers, never while rendering
+const stamp = () => Date.now()
 const fmtWhen = ts => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 
 /* ---------- popover ---------- */
@@ -140,16 +142,6 @@ function Pop({ anchor, onClose, children, width = 220 }) {
         </>,
         document.body,
     )
-}
-
-function AutoText({ value, onChange, placeholder, autoFocus }) {
-    const ref = useRef(null)
-    useLayoutEffect(() => {
-        const el = ref.current
-        el.style.height = 'auto'
-        el.style.height = el.scrollHeight + 'px'
-    }, [value])
-    return <textarea ref={ref} className="kp-body" rows={2} value={value} placeholder={placeholder} autoFocus={autoFocus} onChange={e => onChange(e.target.value)} />
 }
 
 /* ---------- the actions row used by cards, the composer and the editor ---------- */
@@ -329,34 +321,35 @@ function Composer({ labels, onAdd, onNewLabel }) {
 
 /* ---------- a note in the grid ---------- */
 /* A small, read-only picture of the blocks for the card. Checkboxes work right on the card. */
+const PREVIEW_ROWS = 16
+// What it does: flattens the blocks depth-first into at most PREVIEW_ROWS rows, remembering each row's depth and list number.
+// When to use it: to draw the small read-only picture of a note on a card.
+const previewRows = (list, depth = 0, out = []) => {
+    let n = 0
+    for (const b of list) {
+        if (out.length >= PREVIEW_ROWS) break
+        n = b.type === 'number' ? n + 1 : 0
+        out.push({ b, depth, n })
+        if (b.kids && b.kids.length) previewRows(b.kids, depth + 1, out)
+    }
+    return out
+}
+
 function Preview({ note, onToggle, disabled }) {
     const blocks = blocksOf(note)
     const total = flat(blocks).length
-    let left = 16
-    const walk = (list, depth) => {
-        let n = 0
-        return list.map(b => {
-            n = b.type === 'number' ? n + 1 : 0
-            if (left <= 0) return null
-            left -= 1
-            return (
-                <div key={b.id}>
-                    <div className={'kp-b t-' + b.type + (b.done ? ' done' : '')} style={{ paddingLeft: depth * 16 }}>
-                        {b.type === 'todo' && <input type="checkbox" checked={!!b.done} disabled={disabled} aria-label={`Mark "${b.text}" as done`} onClick={e => e.stopPropagation()} onChange={e => onToggle(b.id, e.target.checked)} />}
-                        {b.type === 'bullet' && <span className="kp-mk">•</span>}
-                        {b.type === 'number' && <span className="kp-mk">{n}.</span>}
-                        {b.type === 'toggle' && <span className="kp-mk">▸</span>}
-                        {b.type === 'divider' ? <hr /> : b.type === 'code' ? <pre>{b.text}</pre> : <span className="kp-bt">{linkify(b.text || '')}</span>}
-                    </div>
-                    {b.kids && b.kids.length > 0 && walk(b.kids, depth + 1)}
-                </div>
-            )
-        })
-    }
     return (
         <div className="kp-list">
-            {walk(blocks, 0)}
-            {total > 16 && <p className="muted small">+ {total - 16} more</p>}
+            {previewRows(blocks).map(({ b, depth, n }) => (
+                <div key={b.id} className={'kp-b t-' + b.type + (b.done ? ' done' : '')} style={{ paddingLeft: depth * 16 }}>
+                    {b.type === 'todo' && <input type="checkbox" checked={!!b.done} disabled={disabled} aria-label={`Mark "${b.text}" as done`} onClick={e => e.stopPropagation()} onChange={e => onToggle(b.id, e.target.checked)} />}
+                    {b.type === 'bullet' && <span className="kp-mk">•</span>}
+                    {b.type === 'number' && <span className="kp-mk">{n}.</span>}
+                    {b.type === 'toggle' && <span className="kp-mk">▸</span>}
+                    {b.type === 'divider' ? <hr /> : b.type === 'code' ? <pre>{b.text}</pre> : <span className="kp-bt">{linkify(b.text || '')}</span>}
+                </div>
+            ))}
+            {total > PREVIEW_ROWS && <p className="muted small">+ {total - PREVIEW_ROWS} more</p>}
         </div>
     )
 }
@@ -444,17 +437,13 @@ export default function Notes() {
     const [view, setView] = useState('notes')
     const [query, setQuery] = useState('')
     const [layout, setLayout] = useState('grid')
-    const [editId, setEditId] = useState(null)
+    // A roadmap topic can open a note (see openNote in shared.js): its id is waiting in window.__openNoteId when this page mounts
+    const [editId, setEditId] = useState(() => window.__openNoteId || null)
     const [showLabels, setShowLabels] = useState(false)
     const fileRef = useRef(null)
 
-    // Opened from a roadmap topic (see openNote in shared.js)
-    useEffect(() => {
-        if (window.__openNoteId) {
-            setEditId(window.__openNoteId)
-            window.__openNoteId = null
-        }
-    }, [])
+    // The id was read above when the page mounted. Clear it so it only opens once.
+    useEffect(() => { window.__openNoteId = null }, [])
 
     // Convert notes written in the old format (text body or checklist) to blocks, once
     useEffect(() => {
@@ -482,7 +471,7 @@ export default function Notes() {
             if (!dragId.current || dragId.current === n.id) return
             e.preventDefault()
             const r = e.currentTarget.getBoundingClientRect()
-            // Grid: left half = before, right half. List: top half = before, bottom half
+            // Grid: left half = before, right half = after. List: top half = before, bottom half = after
             const after = layout === 'grid' ? e.clientX > r.left + r.width / 2 : e.clientY > r.top + r.height / 2
             const side = after ? 'after' : 'before'
             setOver(cur => (cur && cur.id === n.id && cur.side === side ? cur : { id: n.id, side }))
@@ -509,7 +498,7 @@ export default function Notes() {
     })
     const addLabel = l => { if (!labels.includes(l)) setLabels([...labels, l]) }
     const trash = n => {
-        save({ ...n, trashed: Date.now(), pinned: false })
+        save({ ...n, trashed: stamp(), pinned: false })
         play('delete')
         notify({
             title: 'Note moved to trash',
@@ -533,7 +522,7 @@ export default function Notes() {
     }
     const duplicate = n => {
         play('add')
-        save({ ...n, id: uid(), title: n.title ? n.title + ' (copy)' : '', pinned: false, created: Date.now(), edited: Date.now(), blocks: reid(structuredClone(blocksOf(n))) })
+        save({ ...n, id: uid(), title: n.title ? n.title + ' (copy)' : '', pinned: false, created: stamp(), edited: stamp(), blocks: reid(structuredClone(blocksOf(n))) })
     }
     const forever = id => updateNotes(list => list.filter(n => n.id !== id))
     // Turn the open items of a checklist into todos for today (each item is sent once)
@@ -544,7 +533,7 @@ export default function Notes() {
         const ids = new Set(open.map(b => b.id))
         const bl = structuredClone(blocksOf(n))
         flat(bl).forEach(b => { if (ids.has(b.id)) b.sent = true })
-        save({ ...n, blocks: bl, edited: Date.now() })
+        save({ ...n, blocks: bl, edited: stamp() })
         play('add')
         notify({ title: `Added ${open.length} todo${open.length > 1 ? 's' : ''} to today`, body: n.title || 'From your note', icon: '📅' })
     }

@@ -15,8 +15,8 @@ import { pushNudge } from './pushClient'
 
 export const ONLINE_MAX = 12 * 3600000 // a "studying" card expires after 12 hours
 const ONLINE_MS = 150000               // seen in the last 2.5 minutes = online
-const BEAT_MS = 60000                  // how often your own "I am here" is written
 const STALE_MS = 10 * 60000            // a studying card whose owner was not seen for 10 minutes is not trusted
+const BEAT_MS = 60000                  // how often your own "I am here" is written
 const COOLDOWN = 20000                 // ms before you can cheer the same friend again
 
 /* ---------- observable data for the screens ---------- */
@@ -29,7 +29,7 @@ const commit = patch => {
 export const useLive = () => useSyncExternalStore(f => { subs.add(f); return () => subs.delete(f) }, () => snap)
 export const getLive = () => snap
 
-// What it does: says what one member is doing right now: 'studying' | 'paused' | 'online' | 'offline'.
+// What it does: says what one member is doing right now: 'studying' | 'paused' | 'online' | 'away' | 'offline'.
 // When to use it: for every dot, label or counter that shows presence. t = Date.now().
 export function presenceOf(m, t) {
     const seen = m.seen || 0
@@ -42,7 +42,6 @@ export function presenceOf(m, t) {
     if (t - (legacy ? m.updatedAt || 0 : seen) < ONLINE_MS) return { state: m.state === 'away' ? 'away' : 'online', ms: 0, last }
     return { state: 'offline', ms: 0, last }
 }
-const isOn = (m, t) => presenceOf(m, t).state !== 'offline'
 
 /* ---------- alerts ---------- */
 const recent = new Map()

@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components -- this file also exports shared helpers; moving them out means editing every file that imports them */
 import { useState } from 'react'
 import { clamp, isHttp, normalizeUrl, notify, useStore } from './shared'
 import { play } from './sound'
