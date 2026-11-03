@@ -226,11 +226,28 @@ export async function saveMember(code, uid, card) {
     await withTimeout(F.setDoc(F.doc(db, 'groups', code, 'members', uid), card))
 }
 
-// What it does: changes only the "seen" time of your card (a tiny write), so friends know you are online.
-// When to use it: every couple of minutes while the app is open.
-export async function touchMember(code, uid) {
-    const { F, db } = await load()
-    await F.updateDoc(F.doc(db, 'groups', code, 'members', uid), { seen: Date.now() })
+let cachedToken = ''
+
+// What it does: changes only "seen" and "state" of your card (a tiny write), so friends know you are online or away.
+// When to use it: every minute while the app is open, and whenever the tab becomes visible or hidden.
+export async function touchMember(code, uid, state = 'online') {
+    const { F, db, auth } = await load()
+    // keep a fresh token ready, because markOffline cannot wait for one while the page is closing
+    if (auth.currentUser) auth.currentUser.getIdToken().then(t => { cachedToken = t }).catch(() => {})
+    await F.updateDoc(F.doc(db, 'groups', code, 'members', uid), { seen: Date.now(), state })
+}
+
+// What it does: tells the group you are offline while the page is closing.
+// When to use it: from the "pagehide" event only. It uses fetch with keepalive, which the browser finishes after the tab is gone.
+export function markOffline(code, uid) {
+    if (!configured || !cachedToken) return
+    const url = `https://firestore.googleapis.com/v1/projects/${config.projectId}/databases/(default)/documents/groups/${code}/members/${uid}?updateMask.fieldPaths=state&updateMask.fieldPaths=seen`
+    fetch(url, {
+        method: 'PATCH',
+        keepalive: true,
+        headers: { Authorization: 'Bearer ' + cachedToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: { state: { stringValue: 'offline' }, seen: { integerValue: String(Date.now()) } } }),
+    }).catch(() => {})
 }
 
 export async function leaveGroup(code, uid) {

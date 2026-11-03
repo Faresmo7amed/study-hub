@@ -45,13 +45,18 @@ export async function subscribePush() {
     await registerWorker()
     const reg = await navigator.serviceWorker.ready
     let sub = await reg.pushManager.getSubscription()
-    if (!sub) {
+        if (!sub) {
+        const make = () => reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toKey(VAPID) })
         try {
-            sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toKey(VAPID) })
+            sub = await make()
         } catch {
             const old = await reg.pushManager.getSubscription()
             if (old) await old.unsubscribe()
-            sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toKey(VAPID) })
+            try {
+                sub = await make()
+            } catch {
+                throw new Error('This browser could not reach its push service. In Brave, turn on Settings → Privacy and security → "Use Google Services for push messaging" and restart. Also try without a VPN or ad-blocker, and not in a private window.')
+            }
         }
     }
     await workerCall('/subscribe', 'POST', { subscription: sub.toJSON() })

@@ -7,8 +7,8 @@ import { cheer, presenceOf, useLive } from './live'
    Parent: RightRail. Children: Row.
    When to use it: once in the right rail; the data comes from the live layer, so it is always current. */
 
-const ORDER = { studying: 0, paused: 1, online: 2, offline: 3 }
-const LABEL = { studying: '📖 studying', paused: '⏸ paused', online: '🟢 online', offline: '⚫ offline' }
+const ORDER = { studying: 0, paused: 1, online: 2, away: 3, offline: 4 }
+const LABEL = { studying: '📖 studying', paused: '⏸ paused', online: '🟢 online', away: '🌙 away', offline: '⚫ offline' }
 
 const ago = ms => {
     const m = Math.round((Date.now() - ms) / 60000)
@@ -20,7 +20,7 @@ const ago = ms => {
 }
 
 function Row({ gid, m, p, me, now }) {
-    const text = p.state === 'studying' ? `${LABEL.studying} · ${hms(now - m.studying)}` : p.state === 'paused' ? `${LABEL.paused} · ${hms(m.paused)}` : p.state === 'online' ? LABEL.online : `${LABEL.offline} · ${ago(p.last)}`
+    const text = p.state === 'studying' ? `${LABEL.studying} · ${hms(now - m.studying)}` : p.state === 'paused' ? `${LABEL.paused} · ${hms(m.paused)}` : p.state === 'online' || p.state === 'away' ? LABEL[p.state] : `${LABEL.offline} · ${ago(p.last)}`
     const photo = m.profile && m.profile.photo
     return (
         <li className={'pv-row ' + p.state}>
@@ -74,5 +74,5 @@ const CSS = `
 .pv-av{position:relative;width:32px;height:32px;border-radius:50%;background:var(--ln);display:grid;place-items:center;font:700 14px var(--head);flex:none}
 .pv-av img{width:100%;height:100%;border-radius:50%;object-fit:cover}
 .pv-av i{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;border:2px solid var(--sf2);background:#7b8294}
-.pv-row.studying .pv-av i{background:var(--ok,#3ddc97)}.pv-row.online .pv-av i{background:#4cc9f0}.pv-row.paused .pv-av i{background:#ffb454}
+.pv-row.studying .pv-av i{background:var(--ok,#3ddc97)}.pv-row.online .pv-av i{background:#4cc9f0}.pv-row.paused .pv-av i{background:#ffb454} .pv-row.away .pv-av i{background:#c9a227}
 `

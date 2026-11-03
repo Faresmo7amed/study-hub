@@ -14,9 +14,9 @@ import { pushNudge } from './pushClient'
    ============================================================ */
 
 export const ONLINE_MAX = 12 * 3600000 // a "studying" card expires after 12 hours
-const ONLINE_MS = 5 * 60000            // seen in the last 5 minutes = online
+const ONLINE_MS = 150000               // seen in the last 2.5 minutes = online
+const BEAT_MS = 60000                  // how often your own "I am here" is written
 const STALE_MS = 10 * 60000            // a studying card whose owner was not seen for 10 minutes is not trusted
-const BEAT_MS = 120000                 // how often your own "I am here" is written
 const COOLDOWN = 20000                 // ms before you can cheer the same friend again
 
 /* ---------- observable data for the screens ---------- */
@@ -35,10 +35,11 @@ export function presenceOf(m, t) {
     const seen = m.seen || 0
     const legacy = !seen // a card written by an older version of the app has no "seen"
     const alive = legacy || t - seen < STALE_MS
+    const last = Math.max(seen, m.updatedAt || 0)
+    if (m.state === 'offline') return { state: 'offline', ms: 0, last }
     if (m.studying > 0 && t - m.studying < ONLINE_MAX && alive) return { state: 'studying', ms: t - m.studying }
     if (!m.studying && typeof m.paused === 'number' && t - (m.updatedAt || 0) < ONLINE_MAX && alive) return { state: 'paused', ms: m.paused }
-    const last = Math.max(seen, m.updatedAt || 0)
-    if (t - (legacy ? m.updatedAt || 0 : seen) < ONLINE_MS) return { state: 'online', ms: 0, last }
+    if (t - (legacy ? m.updatedAt || 0 : seen) < ONLINE_MS) return { state: m.state === 'away' ? 'away' : 'online', ms: 0, last }
     return { state: 'offline', ms: 0, last }
 }
 const isOn = (m, t) => presenceOf(m, t).state !== 'offline'
@@ -175,21 +176,47 @@ export function syncGroups() {
 }
 
 /* ---------- "I am here" ---------- */
+// Every open tab of this browser registers itself in localStorage. Visible tab = online, only hidden tabs = away, none = offline.
+const TABS_KEY = 'studyhub-tabs'
+const TAB_TTL = 150000
+const tabId = Math.random().toString(36).slice(2)
+const readTabs = () => { try { return JSON.parse(localStorage.getItem(TABS_KEY)) || {} } catch { return {} } }
+
+// What it does: records this tab (or removes it when gone = true) and returns 'online' | 'away' | 'offline' for the whole browser.
+// When to use it: before every presence write. StudyGroup.jsx also uses it when it publishes your card.
+export function presenceNow(gone = false) {
+    const t = Date.now()
+    const tabs = readTabs()
+    Object.keys(tabs).forEach(k => { if (t - tabs[k].t > TAB_TTL) delete tabs[k] })
+    if (gone) delete tabs[tabId]
+    else tabs[tabId] = { t, v: document.visibilityState === 'visible' }
+    try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)) } catch { /* private mode */ }
+    const list = Object.values(tabs)
+    return list.some(x => x.v) ? 'online' : list.length ? 'away' : 'offline'
+}
+
 let beatTimer = null
+const groupIds = () => (getStore('studygroup', STUDY_DEFAULT).groups || []).map(g => g.id)
 const beat = () => {
     if (!me) return
-    ;(getStore('studygroup', STUDY_DEFAULT).groups || []).forEach(g => fb.touchMember(g.id, me).catch(() => {}))
+    const state = presenceNow()
+    groupIds().forEach(id => fb.touchMember(id, me, state).catch(() => {}))
 }
-const onVisible = () => { if (document.visibilityState === 'visible') beat() }
+const onGone = () => {
+    if (!me) return
+    if (presenceNow(true) === 'offline') groupIds().forEach(id => fb.markOffline(id, me))
+}
 
 export function startLive(uid) {
     if (me === uid) return
     stopLive()
     me = uid
     syncGroups()
-    setTimeout(beat, 4000)
+    setTimeout(beat, 1500)
     beatTimer = setInterval(beat, BEAT_MS)
-    document.addEventListener('visibilitychange', onVisible)
+    document.addEventListener('visibilitychange', beat)
+    window.addEventListener('pageshow', beat)
+    window.addEventListener('pagehide', onGone)
     window.addEventListener('online', beat)
 }
 
@@ -198,7 +225,9 @@ export function stopLive() {
     watchers.clear()
     firstSnap.clear()
     clearInterval(beatTimer)
-    document.removeEventListener('visibilitychange', onVisible)
+    document.removeEventListener('visibilitychange', beat)
+    window.removeEventListener('pageshow', beat)
+    window.removeEventListener('pagehide', onGone)
     window.removeEventListener('online', beat)
     me = ''
     snap = { members: {}, cheers: {}, ready: false }

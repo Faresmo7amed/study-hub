@@ -7,7 +7,7 @@ import { HeatGrid, HeatLegend } from './Heatmap'
 import * as fb from './firebase'
 import { getSyncUser, useSyncState } from './sync'
 import { play } from './sound'
-import { cheer, useLive } from './live'
+import { cheer, presenceNow, useLive } from './live'
 
 /* eslint-disable react-refresh/only-export-components */
 /* ============================================================
@@ -137,7 +137,8 @@ function publish(user, ids) {
             done: planned.filter(t => t.done).length, total: planned.length,
             week: weekKey, plan: planOf(week), streak: app.streak, best: app.best,
         },
-        seen: stamp.getTime(), // friends read this as "online"; live.js refreshes it every couple of minutes
+        seen: stamp.getTime(), // friends read this as "online"; live.js refreshes it every minute
+        state: presenceNow(),
         updatedAt: stamp.getTime(),
         profile: Object.fromEntries(Object.entries(s.profile || {}).filter(([, v]) => v)),
     }

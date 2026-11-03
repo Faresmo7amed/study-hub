@@ -20,6 +20,9 @@ studyhub
 ├─ eslint.config.js
 ├─ FIREBASE_SETUP.md
 ├─ firestore.rules
+├─ functions
+│  └─ api
+│     └─ [[path]].js
 ├─ index.html
 ├─ package.json
 ├─ pnpm-lock.yaml
@@ -43,6 +46,7 @@ studyhub
 │  ├─ brief.js
 │  ├─ Dashboard.jsx
 │  ├─ Database.jsx
+│  ├─ dragScroll.js
 │  ├─ firebase.js
 │  ├─ gcal.js
 │  ├─ Heatmap.jsx
