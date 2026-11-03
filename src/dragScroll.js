@@ -6,8 +6,8 @@
    Imported once in App.jsx. It works for every drag in the app and needs no other changes.
    ============================================================ */
 
-const ZONE = 90       // px from an edge where scrolling starts
-const MAX_SPEED = 26  // px per frame at the very edge
+const ZONE = 150      // px from an edge where scrolling starts
+const MAX_SPEED = 70  // px per frame at the very edge
 const TOP_BAR = 64    // the sticky top bar covers the first pixels of the window
 
 let pos = null
@@ -24,7 +24,8 @@ const scrollerAt = (x, y) => {
     return null
 }
 
-const speed = (dist) => Math.round(MAX_SPEED * Math.min(1, (ZONE - dist) / ZONE))
+// Eases in: a gentle start near the zone's border, fast at the edge
+const speed = (dist) => Math.max(4, Math.round(MAX_SPEED * Math.pow(Math.min(1, (ZONE - dist) / ZONE), 1.4)))
 
 function step() {
     raf = 0
@@ -54,6 +55,21 @@ if (typeof document !== 'undefined' && !window.__dragScroll) {
         pos = { x: e.clientX, y: e.clientY }
         if (!raf) raf = requestAnimationFrame(step)
     }, true)
+    // If the browser delivers wheel events during a drag, honour them (many browsers do not)
+    document.addEventListener('wheel', e => {
+        if (!pos) return
+        const sc = scrollerAt(e.clientX, e.clientY)
+        if (sc) sc.scrollTop += e.deltaY
+        else window.scrollBy(0, e.deltaY)
+        e.preventDefault()
+    }, { capture: true, passive: false })
+    // Mouse wheel during a drag. Some browsers (Firefox) deliver it; Chrome and Edge usually do not while a native drag runs.
+    document.addEventListener('wheel', e => {
+        if (!pos) return
+        const sc = scrollerAt(e.clientX, e.clientY)
+        if (sc) sc.scrollTop += e.deltaY
+        else window.scrollBy(0, e.deltaY)
+    }, { capture: true, passive: true })
     document.addEventListener('dragend', stop, true)
     document.addEventListener('drop', stop, true)
     window.addEventListener('blur', stop)
