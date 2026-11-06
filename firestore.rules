@@ -134,7 +134,7 @@ service cloud.firestore {
         allow create, update: if member()
           && request.auth.uid == uid
           && exists(/databases/$(database)/documents/groups/$(code))
-          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'paused', 'tier', 'todos', 'profile', 'seen', 'state', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['name', 'days', 'total', 'studying', 'paused', 'tier', 'todos', 'profile', 'seen', 'state', 'goal', 'updatedAt'])
           && request.resource.data.name is string
           && request.resource.data.name.size() > 0
           && request.resource.data.name.size() <= 24
@@ -146,6 +146,9 @@ service cloud.firestore {
           && request.resource.data.get('seen', 0) is number
           && request.resource.data.get('state', 'online') in ['online', 'away', 'offline']
           && request.resource.data.get('todos', {}) is map
+          && request.resource.data.get('goal', {}) is map
+          && request.resource.data.get('goal', {}).get('t', '').size() <= 60
+          && request.resource.data.get('goal', {}).get('m', 0) is number
           && profileOk(request.resource.data.get('profile', {}))
           && request.resource.data.updatedAt is number;
         allow delete: if request.auth != null && request.auth.uid == uid;

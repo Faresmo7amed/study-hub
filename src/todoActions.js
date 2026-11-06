@@ -142,6 +142,24 @@ export function moveTodos(fromISO, ids, toISO) {
     return moving.length
 }
 
+// What it does: adds several todos to one date (any week). Items: [{ text, type?, src? }].
+// An item whose src (where it came from, for example "db:table:row") is already on that day is skipped, so pressing twice does not duplicate.
+// When to use it: to send things from other pages (like the Database) into the todo list. Returns how many were added.
+export function addTodosOn(dateISO, items) {
+    const d = parseISO(dateISO)
+    const key = iso(weekStart(d))
+    const day = dayIndex(d)
+    const have = new Set((((getStore('todos', {})[key]) || emptyWeek())[day] || []).map(t => t.src).filter(Boolean))
+    const fresh = items.filter(i => i && i.text && !(i.src && have.has(i.src)))
+    if (!fresh.length) return 0
+    setStore('todos', cur => {
+        const week = (cur[key] || emptyWeek()).map(list => [...list])
+        fresh.forEach(i => week[day].push({ id: uid(), text: i.text, type: i.type || 'task', ...(i.src ? { src: i.src } : {}), done: false, doneOn: null }))
+        return { ...cur, [key]: week }
+    }, {})
+    return fresh.length
+}
+
 // Finds a todo anywhere in the store: { key (week), day, todo } or null
 export function findTodo(todos, id) {
     for (const [key, week] of Object.entries(todos || {})) {

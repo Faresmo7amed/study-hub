@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { clamp, getStore, uid, useStore } from './shared'
+import { addDays, clamp, getStore, iso, notify, uid, useStore } from './shared'
+import { addTodosOn } from './todoActions'
 import { play } from './sound'
 import { Icon, IconPicker } from './Icons'
 import { textIcon } from './iconUtils'
@@ -1310,6 +1311,8 @@ function TableMenu({ anchor, onClose, db, table, api }) {
     const [reset, setReset] = useState(false)
     return (
         <Pop anchor={anchor} onClose={onClose} width={240}>
+            <button className="nt-item" disabled={!table.rows.length} onClick={() => { sendToTodos(todoItems(db, table, table.rows), 0); onClose() }}><span className="nt-ti">✅</span>All rows to today's todos</button>
+            <button className="nt-item" onClick={() => { sendToTodos(db.order.flatMap(id => todoItems(db, db.tables[id], db.tables[id].rows)), 0); onClose() }}><span className="nt-ti">🗂</span>Whole group to today's todos</button>
             <button className="nt-item" onClick={() => { exportCSV(db, table); onClose() }}><span className="nt-ti">⇩</span>Export as CSV</button>
             <button className="nt-item danger" disabled={db.order.length <= 1} onClick={() => { if (armed) { api.deleteTable(table.id); onClose() } else setArmed(true) }}>
                 <span className="nt-ti">🗑</span>{armed ? 'Click again to delete' : 'Delete this database'}
@@ -1338,11 +1341,31 @@ const edgeOf = (e, horizontal) => {
     return horizontal ? (e.clientX < r.left + r.width / 2 ? 'before' : 'after') : (e.clientY < r.top + r.height / 2 ? 'before' : 'after')
 }
 
-function RowMenu({ anchor, onClose, table, row, api }) {
+/* ---------- send to todos ----------
+   What it does: turns rows (their title) into todos of today or tomorrow. A row already sent to that day is skipped.
+   When to use it: from the row menu (one row) and the database menu (all rows, or the whole group). */
+const todoItems = (db, table, rows) => {
+    const title = table.props[0]
+    return rows
+        .map(r => ({ text: String(plain(db, title, r.cells[title.id]) ?? '').trim().slice(0, 200), src: `db:${table.id}:${r.id}` }))
+        .filter(i => i.text)
+}
+function sendToTodos(items, offset) {
+    const n = addTodosOn(iso(addDays(new Date(), offset)), items)
+    const when = offset ? 'tomorrow' : 'today'
+    notify(n
+        ? { title: `${n} added to ${when}'s todos`, body: items.length > n ? `${items.length - n} were already there.` : 'Open the Todos page to see them.', icon: '✅' }
+        : { title: 'Nothing new to add', body: `These are already in ${when}'s todos.`, icon: 'ℹ️' })
+    if (n) play('save')
+}
+
+function RowMenu({ anchor, onClose, db, table, row, api }) {
     const [armed, setArmed] = useState(false)
     return (
         <Pop anchor={anchor} onClose={onClose} width={200}>
             <button className="nt-item" onClick={() => { api.peek(row.id); onClose() }}><span className="nt-ti">↗</span>Open</button>
+            <button className="nt-item" onClick={() => { sendToTodos(todoItems(db, table, [row]), 0); onClose() }}><span className="nt-ti">✅</span>Add to today's todos</button>
+            <button className="nt-item" onClick={() => { sendToTodos(todoItems(db, table, [row]), 1); onClose() }}><span className="nt-ti">📅</span>Add to tomorrow's todos</button>
             <button className="nt-item" onClick={() => { api.duplicateRow(table.id, row.id); onClose() }}><span className="nt-ti">⧉</span>Duplicate</button>
             <button className="nt-item" disabled={table.rows[0] && table.rows[0].id === row.id} onClick={() => { api.moveRow(table.id, row.id, -1); onClose() }}><span className="nt-ti">↑</span>Move up</button>
             <button className="nt-item" disabled={table.rows.length > 0 && table.rows[table.rows.length - 1].id === row.id} onClick={() => { api.moveRow(table.id, row.id, 1); onClose() }}><span className="nt-ti">↓</span>Move down</button>
@@ -1545,7 +1568,7 @@ function DatabaseBlock({ blockId, canRemove, onRemove, group }) {
             {menu && menu.kind === 'props' && <PropsMenu anchor={menu.anchor} onClose={closeMenu} table={table} api={api} />}
             {menu && menu.kind === 'table' && <TableMenu anchor={menu.anchor} onClose={closeMenu} db={db} table={table} api={api} />}
             {menu && menu.kind === 'addprop' && <AddPropMenu anchor={menu.anchor} onClose={closeMenu} db={db} table={table} api={api} />}
-            {menu && menu.kind === 'row' && menuRow && <RowMenu anchor={menu.anchor} onClose={closeMenu} table={table} row={menuRow} api={api} />}
+            {menu && menu.kind === 'row' && menuRow && <RowMenu anchor={menu.anchor} onClose={closeMenu} db={db} table={table} row={menuRow} api={api} />}
         </section>
     )
 }

@@ -142,8 +142,11 @@ function publish(user, ids) {
         updatedAt: stamp.getTime(),
         profile: Object.fromEntries(Object.entries(s.profile || {}).filter(([, v]) => v)),
     }
+    // Your personal goal is only added to the groups you chose to share it with
+    const mg = s.myGoal
+    const withGoal = mg && mg.min > 0 ? { ...card, goal: { t: String(mg.title || '').slice(0, 60), m: mg.min } } : card
     const list = ids || s.groups.map(g => g.id)
-    list.forEach(id => fb.saveMember(id, user.uid, card).catch(fail))
+    list.forEach(id => fb.saveMember(id, user.uid, (mg && (mg.groups || []).includes(id) ? withGoal : card)).catch(fail))
 }
 
 /* The session is stored on this device only ("studyrun"), so a reload does not lose it.
@@ -159,7 +162,7 @@ export const runElapsed = (r, t) => {
 
 export function startSession(user, subject = '') {
     if (runActive(getStore('studyrun', {}))) return
-    setStore('studyrun', { on: true, acc: 0, since: Date.now(), subject: String(subject || '').slice(0, 30) }, {})
+    setStore('studyrun', { on: true, acc: 0, since: Date.now(), day: todayISO(), subject: String(subject || '').slice(0, 30) }, {})
     play('studystart')
     publish(user)
 }
@@ -185,6 +188,40 @@ export function resumeSession(user) {
     publish(user)
 }
 
+// What it does: adds minutes to a given day of your study history (not always today).
+function bankMinutes(day, minutes, subject) {
+    if (minutes <= 0) return
+    setStore('studygroup', cur => ({
+        ...cur,
+        days: { ...cur.days, [day]: (cur.days[day] || 0) + minutes },
+        total: cur.total + minutes,
+        log: [...(cur.log || []), { d: day, m: minutes, s: subject }].slice(-600),
+        subjects: subject ? [...(cur.subjects || []).filter(x => x !== subject), subject].slice(-30) : (cur.subjects || []),
+    }), STUDY_DEFAULT)
+}
+
+// What it does: closes a session that belongs to an earlier day. Its time is saved on the day it started, and the timer starts fresh for today.
+// - paused or left behind (app was closed): everything counted so far goes to its own day and the timer is cleared
+// - still running when midnight passes: time until midnight goes to the old day, and the timer carries on from 00:00 as today's
+// When to use it: every second from the guard below and at start-up, so it never needs a button.
+function settleRun(user) {
+    const r = getStore('studyrun', {})
+    const p = runParts(r)
+    if (!p) return false
+    const today = todayISO()
+    const startDay = r.day || (p.since ? iso(new Date(p.since)) : today) // an old save without a day: a paused one cannot be dated
+    if (startDay >= today) return false
+    const midnight = parseISO(today).getTime()
+    const subject = String(r.subject || '').trim()
+    const ms = p.acc + (p.since ? Math.max(0, midnight - p.since) : 0)
+    const minutes = Math.min(MAX_SESSION, Math.floor(ms / 60000))
+    bankMinutes(startDay, minutes, subject)
+    setStore('studyrun', p.since ? { on: true, acc: 0, since: midnight, day: today, subject } : {}, {})
+    if (minutes > 0) notify({ title: 'Earlier session saved', body: `${minutes} min added to ${startDay}. Today starts from zero.`, icon: '📚' })
+    publish(user)
+    return true
+}
+
 /* Sleep and closed-tab guard. It runs once for the whole app (this file is loaded by the left rail).
    - A heartbeat records "the page was alive at this moment" every second.
    - If the page was closed, or the laptop slept, the next heartbeat or the next start-up sees a gap
@@ -204,15 +241,17 @@ function guardBeat() {
     const gap = t - lastTick
     const before = lastTick
     lastTick = t
-    if (!runRunning(getStore('studyrun', {}))) return
-    if (gap > SLEEP_GAP) {
-        if (pauseAt(before, getSyncUser())) {
-            notify({ title: 'Study timer paused', body: 'The device was asleep, so that time was not counted. Press Resume when you are back.', icon: '⏸' })
-            publishWhenReady()
+    if (runRunning(getStore('studyrun', {}))) {
+        if (gap > SLEEP_GAP) {
+            if (pauseAt(before, getSyncUser())) {
+                notify({ title: 'Study timer paused', body: 'The device was asleep, so that time was not counted. Press Resume when you are back.', icon: '⏸' })
+                publishWhenReady()
+            }
+        } else {
+            try { localStorage.setItem(SEEN_KEY, String(t)) } catch { /* private mode: the guard still works while the page is open */ }
         }
-        return
     }
-    try { localStorage.setItem(SEEN_KEY, String(t)) } catch { /* private mode: the guard still works while the page is open */ }
+    settleRun(getSyncUser()) // a new day: yesterday's time is saved to yesterday
 }
 
 if (typeof window !== 'undefined' && !window.__studyGuard) {
@@ -221,6 +260,7 @@ if (typeof window !== 'undefined' && !window.__studyGuard) {
     try {
         const seen = Number(localStorage.getItem(SEEN_KEY)) || 0
         if (seen && runRunning(getStore('studyrun', {})) && pauseAt(seen, null)) publishWhenReady()
+        if (settleRun(null)) publishWhenReady()
     } catch { /* ignore */ }
     setInterval(guardBeat, 1000)
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') guardBeat() })
@@ -230,6 +270,7 @@ if (typeof window !== 'undefined' && !window.__studyGuard) {
 }
 
 export function stopSession(user) {
+    settleRun(user)
     const r = getStore('studyrun', {})
     if (!runActive(r)) return
     const minutes = Math.min(MAX_SESSION, Math.floor(runElapsed(r, Date.now()) / 60000))
@@ -237,15 +278,7 @@ export function stopSession(user) {
     const before = getStore('studygroup', STUDY_DEFAULT).days[today] || 0
     const subject = String(r.subject || '').trim()
     setStore('studyrun', {}, {})
-    if (minutes > 0) {
-        setStore('studygroup', cur => ({
-            ...cur,
-            days: { ...cur.days, [today]: (cur.days[today] || 0) + minutes },
-            total: cur.total + minutes,
-            log: [...(cur.log || []), { d: today, m: minutes, s: subject }].slice(-600),
-            subjects: subject ? [...(cur.subjects || []).filter(x => x !== subject), subject].slice(-30) : (cur.subjects || []),
-        }), STUDY_DEFAULT)
-    }
+    bankMinutes(today, minutes, subject)
     const goalMin = getStore('studygroup', STUDY_DEFAULT).goalMin || 0
     play('studyend')
     if (before < STREAK_MIN && before + minutes >= STREAK_MIN) {
@@ -777,6 +810,7 @@ export default function StudyGroup() {
     const user = sync.user
     const uid = user ? user.uid : ''
     const [s, , update] = useStore('studygroup', STUDY_DEFAULT)
+    const myGoal = s.myGoal || null // your own weekly goal: { title, min, groups: [ids it is shared with] }
     const [run] = useStore('studyrun', {})
     const [activity] = useStore('activity', {})
     const [focus] = useStore('focus', {})
@@ -864,14 +898,16 @@ export default function StudyGroup() {
                 streak, best, todos: plannedToday, profile: m.profile || {},
                 plan: mine ? planOf(todos[ws]) : tp.week === ws ? tp.plan || {} : null, // your own plan is always live
                 appStreak: mine ? stats.streak : tp.streak || 0,
+                goal: mine ? (myGoal && myGoal.min > 0 ? { t: myGoal.title || '', m: myGoal.min } : null) : m.goal && m.goal.m > 0 ? m.goal : null,
             }
         })
-    }, [members, now, todos, stats, uid, myTier, monthNow])
+    }, [members, now, todos, stats, uid, myTier, monthNow, myGoal])
 
     const byName = (a, b) => a.name.localeCompare(b.name)
     const order = useMemo(() => [...rows].sort((a, b) => b[period] - a[period] || byName(a, b)), [rows, period])
     const todayOrder = useMemo(() => [...rows].sort((a, b) => b.today - a.today || byName(a, b)), [rows])
     const myRank = todayOrder.findIndex(r => r.uid === uid)
+    const myRow = rows.find(r => r.uid === uid)
     const cheers = live.cheers[activeId] || EMPTY
     const group = useFeed(fb.watchGroup, activeId, uid, null)
     const sessions = useFeed(fb.watchGroupEvents, activeId, uid, EMPTY)
@@ -1009,6 +1045,31 @@ export default function StudyGroup() {
         const hours = Number(raw)
         if (!Number.isFinite(hours) || hours < 0 || hours > 1000) return notify({ title: 'Enter a number of hours', body: 'For example 20.', icon: '🔢' })
         fb.setGroupGoal(activeId, Math.round(hours * 60)).then(() => play('save')).catch(fail)
+    }
+    // What it does: sets, changes or removes YOUR weekly goal (hours, plus an optional name). Only you see it until you share it.
+    const changeMyGoal = () => {
+        const raw = window.prompt('Your own weekly goal, in hours (0 removes it)', myGoal && myGoal.min ? String(+(myGoal.min / 60).toFixed(1)) : '10')
+        if (raw === null) return
+        const hours = Number(raw)
+        if (!Number.isFinite(hours) || hours < 0 || hours > 150) return notify({ title: 'Enter a number of hours', body: 'For example 10.', icon: '🔢' })
+        if (hours === 0) {
+            update(d => { d.myGoal = null })
+            publish(user)
+            return
+        }
+        const title = window.prompt('What is it for? (optional)', (myGoal && myGoal.title) || '')
+        if (title === null) return
+        update(d => { d.myGoal = { title: title.trim().slice(0, 60), min: Math.round(hours * 60), groups: (d.myGoal && d.myGoal.groups) || [] } })
+        play('save')
+        publish(user)
+    }
+    // What it does: shows or hides your goal in the group you are looking at. When to use it: the Share button of the goal box.
+    const toggleShareGoal = () => {
+        if (!myGoal) return
+        const has = (myGoal.groups || []).includes(activeId)
+        update(d => { d.myGoal = { ...d.myGoal, groups: has ? d.myGoal.groups.filter(x => x !== activeId) : [...(d.myGoal.groups || []), activeId] } })
+        publish(user, [activeId])
+        play('save')
     }
     const planSession = (title, date, time) => fb.saveGroupEvent(activeId, `${uid}_${newId()}`, { owner: uid, title, date, time, at: Date.now() }).then(() => play('save')).catch(fail)
     const dropSession = id => fb.deleteGroupEvent(activeId, id).then(() => play('delete')).catch(fail)
@@ -1155,6 +1216,18 @@ const removeShare = id => {
                             {goal ? (weekTotal >= goal ? '🎉 Goal reached! Time to aim higher.' : `${fmtMin(goal - weekTotal)} to go. Every minute counts, ${s.name}!`) : isOwner ? 'Set a weekly target so everyone studies toward the same number.' : 'The group owner can set a weekly goal.'}
                         </p>
                     </div>
+                    <div className="sg-goalbox">
+                        <div className="row">
+                            <b>My goal{myGoal && myGoal.title ? ` · ${myGoal.title}` : ''}</b>
+                            <span className="muted small grow">{myGoal ? `${fmtMin(myRow ? myRow.week : 0)} of ${fmtMin(myGoal.min)} this week` : 'Only you can see it'}</span>
+                            {myGoal && <button className="btn sm" onClick={toggleShareGoal}>{(myGoal.groups || []).includes(activeId) ? 'Shared · stop' : 'Share with this group'}</button>}
+                            <button className="btn sm" onClick={changeMyGoal}>{myGoal ? 'Change' : 'Set a goal'}</button>
+                        </div>
+                        {myGoal && <div className="bar"><i className={myRow && myRow.week >= myGoal.min ? 'full' : ''} style={{ width: Math.min(100, (100 * (myRow ? myRow.week : 0)) / myGoal.min) + '%' }} /></div>}
+                        <p className="muted small" style={{ margin: 0 }}>
+                            {myGoal ? ((myGoal.groups || []).includes(activeId) ? `${active ? active.name : 'The group'} can see this goal and your progress.` : 'Private. Press Share to show it to this group.') : 'A weekly target just for you, separate from the group goal.'}
+                        </p>
+                    </div>
                     <div className="seg" role="group" aria-label="Period">
                         {Object.entries(PERIODS).map(([k, l]) => <button key={k} className={'btn sm' + (period === k ? ' on' : '')} onClick={() => setPeriod(k)}>{l}</button>)}
                     </div>
@@ -1166,7 +1239,7 @@ const removeShare = id => {
                                     <Avatar name={r.name} photo={r.profile.photo} size={48} />
                                     <div className="grow">
                                         <b>{r.name}{r.uid === uid ? ' (you)' : ''} <TitleChip tier={r.tier} /></b>
-                                        <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : r.paused ? ' · ⏸ paused' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} today` : ''}</small>
+                                        <small className="muted">{r[period] === 0 ? '😴 Not started yet' : TITLES[i] || '🔥 In the race'}{r.on ? ' · 🟢 studying now' : r.paused ? ' · ⏸ paused' : ''}{r.todos && r.todos.total > 0 ? ` · 📝 ${r.todos.done}/${r.todos.total} today` : ''}{r.goal ? ` · 🎯 ${r.goal.t ? r.goal.t + ' ' : ''}${fmtMin(r.week)}/${fmtMin(r.goal.m)}` : ''}</small>
                                     </div>
                                 </button>
                                 <div className="sg-chips">
