@@ -284,6 +284,20 @@ function Row({ b, idx, count, depth, num, ctx }) {
         const el = e.currentTarget
         const atStart = el.selectionStart === 0 && el.selectionEnd === 0
         const atEnd = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'a') {
+            // First press selects the text of this block (browser default). Press again, or press on an empty block, to select every block.
+            if (!el.value || (el.selectionStart === 0 && el.selectionEnd === el.value.length)) {
+                e.preventDefault()
+                ctx.selectAll()
+            }
+            return
+        }
+        if (e.shiftKey && !e.ctrlKey && !e.metaKey && ((e.key === 'ArrowUp' && atStart) || (e.key === 'ArrowDown' && atEnd))) {
+            // Shift+Arrow at the edge of a block keeps going into the next block
+            e.preventDefault()
+            ctx.extend(b.id, e.key === 'ArrowUp' ? -1 : 1)
+            return
+        }
         if (e.key === 'Tab') {
             e.preventDefault()
             if (t === 'code' && !e.shiftKey) {
@@ -454,7 +468,142 @@ export default function BlockEditor({ value, onChange, readOnly = false, label =
     }
     const inOrder = () => domIds().filter(id => sel.includes(id))
     const each = (fn, reverse = false) => change(bl => { (reverse ? inOrder().reverse() : inOrder()).forEach(id => fn(bl, id)) })
-    const stopSelecting = () => { setSelMode(false); setSel([]); lastSel.current = null }
+    const stopSelecting = () => { setSelMode(false); setSel([]); lastSel.current = null; quick.current = false }
+
+    /* ----- quick selection, like Notion: drag across blocks, Ctrl+A twice, Shift+Arrow, or press on a bullet -----
+       Every block is its own text box, and a browser cannot select text across text boxes. So when a drag leaves
+       the block it started in, the blocks in between are selected as whole blocks instead. Then:
+       Ctrl+C copies them as Markdown, Ctrl+X cuts, Delete removes, Shift+Up/Down changes the range, Enter returns to typing, Esc cancels. */
+    const quick = useRef(false) // true when this selection was started by one of the shortcuts above, not by the Select button
+    const modeRef = useRef(false)
+    const anchor = useRef(null)
+    const head = useRef(null)
+    const dragFrom = useRef(null)
+    const picking = useRef(false)
+    useEffect(() => { modeRef.current = selMode }, [selMode])
+
+    const selectRange = (a, z) => {
+        const ids = domIds()
+        const i = ids.indexOf(a)
+        const j = ids.indexOf(z)
+        if (i < 0 || j < 0) return
+        if (!modeRef.current) quick.current = true
+        anchor.current = a
+        head.current = z
+        lastSel.current = z
+        setSelMode(true)
+        setSel(ids.slice(Math.min(i, j), Math.max(i, j) + 1))
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur()
+        const s = window.getSelection && window.getSelection()
+        if (s) s.removeAllRanges()
+    }
+    const selectAll = () => {
+        const ids = domIds()
+        if (ids.length) selectRange(ids[0], ids[ids.length - 1])
+    }
+    const extend = (id, dir) => {
+        const ids = domIds()
+        selectRange(id, ids[ids.indexOf(id) + dir] || id)
+    }
+    // The block under a screen height, or null in the gaps between blocks
+    const blockAt = y => {
+        const els = [...root.current.querySelectorAll('[data-bid]')]
+        if (!els.length) return null
+        const box = el => el.closest('.be-row').getBoundingClientRect()
+        if (y < box(els[0]).top) return els[0].dataset.bid
+        if (y > box(els[els.length - 1]).bottom) return els[els.length - 1].dataset.bid
+        const hit = els.find(el => { const r = box(el); return y >= r.top && y <= r.bottom })
+        return hit ? hit.dataset.bid : null
+    }
+    const onDown = e => {
+        if (readOnly || e.button !== 0) return
+        const t = e.target
+        const inText = t.tagName === 'TEXTAREA' && t.dataset.bid
+        const lead = t.closest && t.closest('.be-lead') && !t.closest('input,button')
+        if (!inText && !lead) return
+        if (inText && quick.current) stopSelecting() // a click in the text goes back to normal typing
+        const row = lead ? t.closest('.be-row') : null
+        const id = inText ? t.dataset.bid : row && row.querySelector('[data-bid]') ? row.querySelector('[data-bid]').dataset.bid : null
+        if (!id) return
+        dragFrom.current = id
+        if (lead) {
+            e.preventDefault() // pressing a bullet selects the block instead of placing a cursor
+            picking.current = true
+            selectRange(id, id)
+        }
+    }
+    useEffect(() => {
+        const move = e => {
+            const from = dragFrom.current
+            if (!from || !root.current) return
+            if (!(e.buttons & 1)) { dragFrom.current = null; picking.current = false; return }
+            const to = blockAt(e.clientY)
+            if (!to || (to === from && !picking.current)) return // still inside one block: normal text selection
+            picking.current = true
+            root.current.classList.add('be-picking')
+            selectRange(from, to)
+        }
+        const up = () => {
+            dragFrom.current = null
+            picking.current = false
+            if (root.current) root.current.classList.remove('be-picking')
+        }
+        window.addEventListener('mousemove', move)
+        window.addEventListener('mouseup', up)
+        return () => {
+            window.removeEventListener('mousemove', move)
+            window.removeEventListener('mouseup', up)
+        }
+    }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    // Keys and clipboard while whole blocks are selected
+    useEffect(() => {
+        if (!selMode || !sel.length) return undefined
+        const typing = t => t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || (t.tagName === 'INPUT' && t.type !== 'checkbox')
+        const onKey = e => {
+            if (!quick.current || typing(e.target)) return
+            const ids = domIds()
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+                e.preventDefault()
+                setSel(ids)
+            } else if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+                e.preventDefault()
+                const next = ids[ids.indexOf(head.current) + (e.key === 'ArrowUp' ? -1 : 1)]
+                if (next) selectRange(anchor.current, next)
+            } else if (e.key === 'Delete' || e.key === 'Backspace') {
+                e.preventDefault()
+                each((bl, id) => ops.remove(bl, id))
+                stopSelecting()
+            } else if (e.key === 'Enter') {
+                e.preventDefault()
+                const first = inOrder()[0]
+                stopSelecting()
+                const el = first && root.current.querySelector(`[data-bid="${first}"]`)
+                if (el) el.focus()
+            }
+        }
+        // Copies the selected blocks as Markdown (nesting kept), so pasting them into any note or todo rebuilds the blocks
+        const pick = list => list.flatMap(bl => (sel.includes(bl.id) ? [{ ...bl, kids: pick(bl.kids || []) }] : pick(bl.kids || [])))
+        const clip = cut => e => {
+            const a = document.activeElement
+            if (a && ((a.tagName === 'TEXTAREA' && a.selectionStart !== a.selectionEnd) || typing(a))) return
+            e.clipboardData.setData('text/plain', blocksToMarkdown(pick(latest.current)))
+            e.preventDefault()
+            if (cut && !readOnly) {
+                each((bl, id) => ops.remove(bl, id))
+                stopSelecting()
+            }
+        }
+        const copy = clip(false)
+        const cut = clip(true)
+        window.addEventListener('keydown', onKey)
+        document.addEventListener('copy', copy)
+        document.addEventListener('cut', cut)
+        return () => {
+            window.removeEventListener('keydown', onKey)
+            document.removeEventListener('copy', copy)
+            document.removeEventListener('cut', cut)
+        }
+    })
     useEffect(() => {
         if (!selMode) return undefined
         const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); stopSelecting() } }
@@ -475,10 +624,12 @@ export default function BlockEditor({ value, onChange, readOnly = false, label =
         change(bl => ops.paste(bl, el.dataset.bid, list))
     }
 
-    const ctx = { change, readOnly, setFocus, root, selMode, sel, toggleSel }
+    const ctx = { change, readOnly, setFocus, root, selMode, sel, toggleSel, selectAll, extend }
     return (
-        <div className="be" ref={root} role="group" aria-label={label} onPaste={onPaste}>
+        <div className="be" ref={root} role="group" aria-label={label} onPaste={onPaste} onMouseDown={onDown}>
             <style>{CSS}</style>
+            {blocks.length === 0 && readOnly && <p className="muted small">Nothing here yet.</p>}
+            <Rows list={blocks} depth={0} ctx={ctx} />
             {selMode && (
                 <div className="be-selbar" role="toolbar" aria-label="Selected blocks">
                     <b>{sel.length} selected</b>
@@ -495,8 +646,6 @@ export default function BlockEditor({ value, onChange, readOnly = false, label =
                     <button type="button" className="btn sm ghost" onClick={stopSelecting}>Done</button>
                 </div>
             )}
-            {blocks.length === 0 && readOnly && <p className="muted small">Nothing here yet.</p>}
-            <Rows list={blocks} depth={0} ctx={ctx} />
             {!readOnly && (
                 <div className="be-add">
                     <button type="button" className="btn sm" onClick={() => add('p')}>+ Text</button>
@@ -543,9 +692,11 @@ const CSS = `
 .be-actions select{width:auto!important;padding:2px 4px!important;font-size:12px;height:26px}
 .be-actions .icon-btn{padding:1px 6px;font-size:14px}.be-actions .icon-btn:disabled{opacity:.3;cursor:default}
 .be-del:hover{color:var(--bad)!important}
-.be-sel{flex:none;margin-top:9px}
+.be-sel{position:absolute;left:-22px;top:9px;margin:0} /* outside the text flow, so selecting never moves the blocks */
+.be-picking,.be-picking *{user-select:none!important;cursor:default}
+.be-lead{cursor:pointer}.be-lead input,.be-lead button{cursor:pointer}
 .be-row.picked{background:color-mix(in srgb,var(--ac) 14%,transparent)}
-.be-selbar{position:sticky;top:0;z-index:5;display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px 8px;margin-bottom:6px;background:var(--sf);border:1px solid var(--ac);border-radius:10px}
+.be-selbar{position:sticky;bottom:0;z-index:5;display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:6px 8px;margin:6px 0 0;background:var(--sf);border:1px solid var(--ac);border-radius:10px}
 .be-selbar select{width:auto!important;padding:4px 8px!important;font-size:13px}
 .be-add{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px;padding-top:10px;border-top:1px dashed var(--ln)}
 .be-add select{width:auto!important;padding:4px 8px!important;font-size:13px}

@@ -98,15 +98,22 @@ const parseMd = (text, fallback) => {
 
 // A note can point at a topic of a roadmap. These read the roadmaps on demand, so Notes does not depend on the Roadmap page.
 const roadmapsNow = () => getStore('roadmaps', { order: [], maps: {} }) || { order: [], maps: {} }
+// Every topic and subtopic (at any level) of a roadmap as { id, label } for a picker; deeper levels get more arrows
+const topicOptions = (list, depth = 0) => (list || []).flatMap(t => [{ id: t.id, label: '↳ '.repeat(depth) + (t.title || 'Untitled') }, ...topicOptions(t.subs, depth + 1)])
 const topicTitle = link => {
     const m = link && roadmapsNow().maps[link.map]
     if (!m) return ''
-    for (const t of m.topics || []) {
-        if (t.id === link.topic) return t.title || 'Untitled'
-        const sub = (t.subs || []).find(x => x.id === link.topic)
-        if (sub) return sub.title || 'Untitled'
+    // Subtopics can have subtopics, so look through every level
+    const find = list => {
+        for (const t of list || []) {
+            if (t.id === link.topic) return t
+            const inner = find(t.subs)
+            if (inner) return inner
+        }
+        return null
     }
-    return ''
+    const hit = find(m.topics)
+    return hit ? hit.title || 'Untitled' : ''
 }
 const openLinked = link => {
     setStore('roadmaps', cur => (cur && cur.maps && cur.maps[link.map] ? { ...cur, active: link.map } : cur), { order: [], maps: {} })
@@ -200,7 +207,7 @@ function Toolbar({ note, onChange, labels, onArchive, onTrash, onDuplicate, onRe
                 const store = roadmapsNow()
                 const ids = (store.order || []).filter(id => store.maps[id])
                 const mapId = store.maps[linkMap] ? linkMap : ''
-                const topics = mapId ? store.maps[mapId].topics.flatMap(t => [{ id: t.id, label: t.title || 'Untitled' }, ...(t.subs || []).map(x => ({ id: x.id, label: '↳ ' + (x.title || 'Untitled') }))]) : []
+                const topics = mapId ? topicOptions(store.maps[mapId].topics) : []
                 return (
                     <Pop anchor={pop.anchor} onClose={close} width={260}>
                         <p className="muted small kp-pad">Link to a roadmap topic</p>
@@ -471,8 +478,8 @@ export default function Notes() {
             if (!dragId.current || dragId.current === n.id) return
             e.preventDefault()
             const r = e.currentTarget.getBoundingClientRect()
-            // Grid: left half = before, right half = after. List: top half = before, bottom half = after
-            const after = layout === 'grid' ? e.clientX > r.left + r.width / 2 : e.clientY > r.top + r.height / 2
+            // Cards run down each column (like Google Keep): top half = before this card, bottom half = after it
+            const after = e.clientY > r.top + r.height / 2
             const side = after ? 'after' : 'before'
             setOver(cur => (cur && cur.id === n.id && cur.side === side ? cur : { id: n.id, side }))
         },
@@ -698,9 +705,11 @@ const CSS = `
 .kp-labels{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
 .kp-chip{font-size:12px;padding:1px 9px;border-radius:999px;background:color-mix(in srgb,var(--tx) 9%,transparent)}
 .kp-sec{font:600 13px var(--body);color:var(--mu);margin:6px 0 -6px}
-.kp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;align-items:start}
-.kp-grid.list{grid-template-columns:1fr;max-width:640px;margin:0 auto;width:100%}
-.kp-grid .kp-card{margin:0;padding:14px 14px 6px;position:relative;box-shadow:none}
+/* Keep-style masonry: CSS columns pack cards of different heights with no empty gaps. The order runs down each column. */
+.kp-grid{column-width:250px;column-gap:14px}
+.kp-grid.list{display:grid;grid-template-columns:1fr;gap:14px;align-items:start;max-width:640px;margin:0 auto;width:100%}
+.kp-grid .kp-card{margin:0 0 14px;padding:14px 14px 6px;position:relative;box-shadow:none;break-inside:avoid}
+.kp-grid.list .kp-card{margin:0}
 .kp-grid .kp-card:hover,.kp-grid .kp-card:focus-within{box-shadow:var(--shadow)}
 .kp-hit{cursor:pointer;display:block;outline-offset:4px;border-radius:8px}
 .kp-hit h3{font-size:17px;margin-bottom:6px;padding-right:22px;word-break:break-word}
@@ -714,8 +723,7 @@ const CSS = `
 .kp-b[class*=" t-h"]{font-weight:700;margin-top:4px}.kp-b.t-h1{font-size:18px}.kp-b.t-h2{font-size:16.5px}.kp-b.t-h3,.kp-b.t-h4,.kp-b.t-h5,.kp-b.t-h6{font-size:15px}
 .kp-b pre{margin:0;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid var(--ln);border-radius:6px;padding:4px 6px;white-space:pre-wrap;flex:1;min-width:0}
 .kp-b hr{flex:1;border:0;border-top:1px solid var(--ln)}
-.kp-grid .kp-card.drop-before{box-shadow:-5px 0 0 var(--ac)}.kp-grid .kp-card.drop-after{box-shadow:5px 0 0 var(--ac)}
-.kp-grid.list .kp-card.drop-before{box-shadow:0 -4px 0 var(--ac)}.kp-grid.list .kp-card.drop-after{box-shadow:0 4px 0 var(--ac)}
+.kp-grid .kp-card.drop-before{box-shadow:0 -4px 0 var(--ac)}.kp-grid .kp-card.drop-after{box-shadow:0 4px 0 var(--ac)}
 .kp-card.dragging{opacity:.45}.kp-grid .kp-card[draggable=true]{cursor:grab}
 .kp-grid .kp-tools{opacity:0;transition:opacity .15s;margin:6px -6px 0}
 .kp-grid .kp-card:hover .kp-tools,.kp-grid .kp-card:focus-within .kp-tools{opacity:1}

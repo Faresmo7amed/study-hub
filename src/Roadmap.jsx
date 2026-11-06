@@ -27,10 +27,11 @@ const RES_TO_TODO = { Docs: 'article', Video: 'video', Article: 'article', Cours
 const DEFAULT_COLORS = { must: '#7c6cff', rec: '#3b9dff', nice: '#f5a524', opt: '#2fbfa8', adv: '#e255a1' }
 
 /* ---------- data ---------- */
-const norm = (t, top = true) => {
+const MAX_SUB_DEPTH = 5 // subtopics inside subtopics, at most this many levels
+const norm = (t, top = true, depth = 0) => {
     const o = { id: uid(), title: '', desc: '', when: '', status: 'todo', priority: 'rec', notes: '', ref: null, ...t }
     o.steps = (t.steps || []).map(x => ({ id: uid(), t: '', done: false, ...x }))
-    o.subs = top ? (t.subs || []).map(x => norm(x, false)) : []
+    o.subs = depth < MAX_SUB_DEPTH ? (t.subs || []).map(x => norm(x, false, depth + 1)) : []
     o.res = (t.res || []).map(x => ({ id: uid(), type: 'Docs', t: '', url: '', ...x }))
     o.proj = (t.proj || []).map(x => ({ id: uid(), t: '', desc: '', done: false, ...x }))
     if (top) o.lane = typeof t.lane === 'string' ? t.lane : ''
@@ -130,17 +131,24 @@ const initialStore = () => {
     return seedMaps()
 }
 
+// All subtopics of an item at every level, in reading order
+const descendants = t => (t.subs || []).flatMap(s => [s, ...descendants(s)])
+// What it does: finds an item at any level. Returns { t: the item, p: its parent (null for a topic), arr: the list it is in, root: the topic it belongs to, depth: 0 for a topic }.
 const locate = (d, id) => {
-    for (const t of d.topics) {
-        if (t.id === id) return { t, p: null, arr: d.topics }
-        const s = t.subs.find(x => x.id === id)
-        if (s) return { t: s, p: t, arr: t.subs }
+    const walk = (arr, p, root, depth) => {
+        for (const t of arr) {
+            const top = root || t
+            if (t.id === id) return { t, p, arr, root: top, depth }
+            const inner = walk(t.subs || [], t, top, depth + 1)
+            if (inner) return inner
+        }
+        return null
     }
-    return null
+    return walk(d.topics, null, null, 0)
 }
-const itemsOf = m => m.topics.flatMap(t => [t, ...t.subs])
+const itemsOf = m => m.topics.flatMap(t => [t, ...descendants(t)])
 const hoursLeft = (topics, st) => topics.reduce((n, t) => {
-    const subs = t.subs.filter(s => s.est > 0)
+    const subs = descendants(t).filter(s => s.est > 0)
     if (subs.length) return n + subs.reduce((k, s) => k + (st(s) === 'done' ? 0 : s.est), 0)
     return n + (st(t) === 'done' ? 0 : t.est || 0)
 }, 0)
@@ -252,7 +260,7 @@ export function nextUp(store) {
     const raw = store.maps[store.active] || store.maps[store.order[0]]
     if (!raw) return null
     const m = structureOk(raw) ? raw : ensureStructure(structuredClone(raw))
-    const left = readingOrder(m).flatMap(x => [x.t, ...x.t.subs]).filter(t => effStatus(t, store.maps) !== 'done')
+    const left = readingOrder(m).flatMap(x => [x.t, ...descendants(x.t)]).filter(t => effStatus(t, store.maps) !== 'done')
     const t = left.find(x => x.priority === 'must') || left[0]
     return t ? { title: t.title || 'Untitled', icon: t.icon || '', roadmap: m.title, pct: mapProgress(m, store.maps).pct } : null
 }
@@ -265,7 +273,7 @@ export function snapshotRoadmap(store, id) {
     const item = (t, top) => ({
         id: t.id, title: (t.title || 'Untitled').slice(0, 80), desc: (t.desc || '').slice(0, 200), when: (t.when || '').slice(0, 40), est: t.est || 0, lane: top ? t.lane : undefined, icon: t.icon && t.icon.length <= 6000 ? t.icon : '',
         priority: t.priority, status: effStatus(t, maps), pct: prog(t, maps), ref: null, mirror: null,
-        subs: top ? t.subs.map(s => item(s, false)) : [],
+        subs: (t.subs || []).map(s => item(s, false)),
         gate: top && t.gate ? { name: t.gate.name, desc: t.gate.desc, highlight: t.gate.highlight, done: t.gate.done } : null,
     })
     const colors = { ...DEFAULT_COLORS, ...(getStore('settings', {}).roadmapColors || {}) }
@@ -299,7 +307,11 @@ const toMarkdown = (data, maps) => {
             out.push(`## ${i + 1}. ${t.title || 'Untitled'} (${STATUS[effStatus(t, maps)]})${depth ? ' · side topic' : ''}`)
             if (t.desc) out.push(`_${t.desc}_`)
             out.push(`- ${box(t)} ${t.title || 'Untitled'}${meta(t) ? ' · ' + meta(t) : ''}`)
-            t.subs.forEach(x => out.push(`  - ${box(x)} ${x.title || 'Untitled'}${meta(x) ? ' · ' + meta(x) : ''}`))
+            const subLines = (list, indent) => list.forEach(x => {
+                out.push(`${'  '.repeat(indent)}- ${box(x)} ${x.title || 'Untitled'}${meta(x) ? ' · ' + meta(x) : ''}`)
+                subLines(x.subs || [], indent + 1)
+            })
+            subLines(t.subs, 1)
             if (t.steps.length) out.push('', '**Steps**', ...t.steps.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}`))
             if (t.proj.length) out.push('', '**Projects**', ...t.proj.map(x => `- [${x.done ? 'x' : ' '}] ${x.t}${x.desc ? ' · ' + x.desc : ''}`))
             if (t.res.length) out.push('', '**Resources**', ...t.res.map(x => `- ${x.type}: ${x.url ? `[${x.t || x.url}](${x.url})` : x.t}`))
@@ -494,7 +506,7 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
         apply()
     })
     // The roadmap grew or shrank: the canvas height follows it
-    useLayoutEffect(() => { apply() }, [L]) // eslint-disable-line react-hooks/exhaustive-deps
+    useLayoutEffect(() => { apply() }, [L])
     // Entering or leaving full screen: show a sensible view for the new size
     useLayoutEffect(() => {
         if (firstFull.current) {
@@ -637,14 +649,14 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
     const byId = new Map()
     data.topics.forEach(t => {
         byId.set(t.id, t)
-        t.subs.forEach(s => byId.set(s.id, s))
+        descendants(t).forEach(s => byId.set(s.id, s))
     })
     const laneThread = new Map(data.lanes.map(l => [l.id, l.thread]))
     const stats = new Map(data.threads.map(th => [th.id, { done: 0, total: 0 }]))
     data.topics.forEach(t => {
         const s = stats.get(laneThread.get(t.lane))
         if (!s) return
-        ;[t, ...t.subs].forEach(x => {
+        ;[t, ...descendants(t)].forEach(x => {
             s.total += 1
             if (st(x) === 'done') s.done += 1
         })
@@ -686,7 +698,7 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
                         if (!d) return null
                         const on = edgeOn(e)
                         const key = `${e.k}:${e.a}:${e.b}`
-                        if (e.k === 'sub' || e.k === 'subcol') return <path key={key} className={'rm-sl' + (on ? ' on' : '')} d={d} />
+                        if (e.k === 'sub' || e.k === 'subcol' || e.k === 'subsub') return <path key={key} className={'rm-sl' + (on ? ' on' : '')} d={d} />
                         return (
                             <g key={key}>
                                 <path className="rm-base" d={d} />
@@ -744,11 +756,11 @@ function Canvas({ data, maps, st, vis, hideSubs, readOnly, apiRef, full, setFull
                     const ad = L.adds.get(t.id)
                     return (
                         <Fragment key={t.id}>
-                            <Node t={t} n={r.n} maps={maps} style={{ left: r.x, top: r.y }} dim={!(vis(t) || t.subs.some(vis))} sel={sel === t.id} pickable={Boolean(mode)} readOnly={readOnly}
+                            <Node t={t} n={r.n} maps={maps} style={{ left: r.x, top: r.y }} dim={!(vis(t) || descendants(t).some(vis))} sel={sel === t.id} pickable={Boolean(mode)} readOnly={readOnly}
                                 onMoveTo={editable ? A.reorder : undefined} onOpen={A.open} onToggle={A.toggle} onGoRef={A.goRef}
                                 tools={editable ? { addBelow: A.addBelow, addSide: A.addSide, startLink: A.startLink } : null} />
                             {g && <Gate t={t} onToggle={A.toggleGate} style={{ left: g.x, top: g.y, width: g.w }} />}
-                            {t.subs.map(s => {
+                            {descendants(t).map(s => {
                                 const sr = L.subs.get(s.id)
                                 if (!sr) return null
                                 return <Node key={s.id} t={s} maps={maps} style={{ left: sr.x, top: sr.y }} dim={!vis(s)} sel={sel === s.id} readOnly={readOnly} onMoveTo={editable ? A.reorder : undefined} onOpen={A.open} onToggle={A.toggle} onGoRef={A.goRef} />
@@ -829,7 +841,7 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
     })
 
     if (!hit) return <aside className="rm-drawer" aria-hidden="true" />
-    const { t, p} = hit
+    const { t, p, depth } = hit
     const close = () => setSel(null)
 
     const topText = (key, ph, extra) => <input type="text" value={t[key] || ''} placeholder={ph} aria-label={ph} onChange={e => api.patch(t.id, { [key]: e.target.value })} {...extra} />
@@ -915,7 +927,7 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
 
             <section>
                 <h3>Study content</h3>
-                <p className="muted small" style={{ margin: '2px 0 8px' }}>Type like a notebook: headings, bulleted and numbered points, toggles, to-dos, code and dividers. Tab nests a line, Enter makes the next one.</p>
+                <p className="muted small" style={{ margin: '2px 0 8px' }}>Type like a notebook: headings, bulleted and numbered points, toggles, to-dos, code and dividers. Tab nests a line, Enter makes the next one. Drag across lines, or press Ctrl+A twice, to select several blocks.</p>
                 <BlockEditor key={t.id} label="Study content" value={content} onChange={blocks => api.patch(t.id, { content: blocks })} />
             </section>
 
@@ -931,7 +943,7 @@ function Drawer({ data, maps, order, currentId, sel, setSel, api, onOpenRoadmap 
                 <button className="btn sm" onClick={() => add('steps', { id: uid(), t: '', done: false })}>+ Add</button>
             </section>
 
-            {!p && (
+            {depth < MAX_SUB_DEPTH && (
                 <section>
                     <h3>Subtopics</h3>
                     {t.subs.map(x => (
@@ -1207,13 +1219,16 @@ export default function Roadmap() {
 
     const maps = store.maps
     const activeId = maps[store.active] ? store.active : store.order[0]
-    const rawData = maps[activeId] || { id: '', title: '', topics: [] }
     // A roadmap saved before threads existed is repaired on the fly (and saved properly on the first edit)
-    const data = useMemo(() => (rawData.id && structureOk(rawData) ? rawData : ensureStructure(structuredClone(rawData))), [rawData])
+    const raw = maps[activeId]
+    const data = useMemo(() => {
+        const m = raw || { id: '', title: '', topics: [] }
+        return m.id && structureOk(m) ? m : ensureStructure(structuredClone(m))
+    }, [raw])
 
     // Copies for other accounts (see RoadmapShare.jsx). Links to other roadmaps are cut, because those roadmaps do not exist for the receiver.
     const cutLinks = m => {
-        m.topics.forEach(t => { t.ref = null; t.mirror = null; t.subs.forEach(x => { x.ref = null; x.mirror = null }) })
+        m.topics.forEach(t => { t.ref = null; t.mirror = null; descendants(t).forEach(x => { x.ref = null; x.mirror = null }) })
         return m
     }
     const exportForShare = () => cutLinks(JSON.parse(JSON.stringify(data)))
@@ -1223,7 +1238,7 @@ export default function Roadmap() {
         reidMap(copy) // new ids everywhere (and the links between them), so the copy never touches the original
         if (!keepProgress) {
             copy.topics.forEach(t => {
-                ;[t, ...t.subs].forEach(x => {
+                ;[t, ...descendants(t)].forEach(x => {
                     x.status = 'todo'
                     x.doneAt = 0
                     x.steps.forEach(st => { st.done = false })
@@ -1303,9 +1318,9 @@ export default function Roadmap() {
             const pairs = []
             const seed = h.t.subs.map(sub => {
                 const copy = JSON.parse(JSON.stringify(sub))
-                copy.subs = []
                 copy.mirror = null
                 reid(copy)
+                descendants(copy).forEach(x => { x.mirror = null; x.ref = null }) // its children come along as subtopics of the new topic
                 pairs.push([sub.id, copy.id])
                 return copy
             })
@@ -1477,7 +1492,7 @@ export default function Roadmap() {
                 d.threads = d.threads.filter(x => x.id !== id)
                 d.conns = d.conns.filter(c => !gone.has(c.from) && !gone.has(c.to))
             })
-            if (sel && (gone.has(sel) || data.topics.some(t => gone.has(t.id) && t.subs.some(s => s.id === sel)))) setSel(null)
+            if (sel && (gone.has(sel) || data.topics.some(t => gone.has(t.id) && descendants(t).some(s => s.id === sel)))) setSel(null)
             play('delete')
         },
         // A free connection from one topic to another (any thread). Returns true when it was made.
@@ -1546,7 +1561,7 @@ export default function Roadmap() {
         const h = sel ? locate(data, sel) : null
         const t = norm({})
         update(d => {
-            t.lane = h ? (h.p || h.t).lane : (d.lanes.find(l => !l.from && l.thread === d.threads[0].id) || d.lanes[0]).id
+            t.lane = h ? h.root.lane : (d.lanes.find(l => !l.from && l.thread === d.threads[0].id) || d.lanes[0]).id
             d.topics.push(t)
         })
         play('add')
@@ -1715,7 +1730,7 @@ export default function Roadmap() {
     const pct = all.length ? Math.round((100 * doneCount) / all.length) : 0
 
     const goNext = () => {
-        const left = readingOrder(data).flatMap(x => [x.t, ...x.t.subs]).filter(t => st(t) !== 'done')
+        const left = readingOrder(data).flatMap(x => [x.t, ...descendants(x.t)]).filter(t => st(t) !== 'done')
         const t = left.find(x => x.priority === 'must') || left[0]
         if (!t) return notify({ title: 'Everything is done', body: 'Add a new topic to keep going.', icon: '🏆' })
         if (canvasApi.current) canvasApi.current.focusNode(t.id)

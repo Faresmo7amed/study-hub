@@ -8,7 +8,7 @@ import {
 } from './shared'
 import { EVENT_COLORS, carryYesterday, openTodoDetails, removeEvent, toggleTodo, toggleEvent} from './todoActions'
 import { ShiftModal, detailsBadge } from './TodoTools'
-import { STREAK_MIN } from './StudyGroup'
+import { STREAK_MIN, fmtMin, saveMyGoal } from './StudyGroup'
 import { runRecurringNow } from './Rewards'
 import Contributions from './Heatmap'
 
@@ -164,7 +164,7 @@ function TitleCard() {
     const [study] = useStore('studygroup', STUDY_DEFAULT)
     const now = useNow(60000)
     const ym = monthKey(now)
-    const days = study.days || {}
+    const days = useMemo(() => study.days || {}, [study.days])
     const st = useMemo(() => tierState(activeDaysIn(ym, activity, focus, days, STREAK_MIN), ym), [ym, activity, focus, days])
     const trophies = useMemo(() => monthTrophies(activity, focus, days, STREAK_MIN).filter(t => t.ym !== ym), [ym, activity, focus, days])
     const len = monthLength(ym)
@@ -265,6 +265,41 @@ function WeeklyReview() {
 /* ============================================================
    Recurring todos: created automatically on the days you choose
    ============================================================ */
+/* ============================================================
+   My goal: a private weekly study goal (the same one as on the Study Group page, where you can also share it with a group)
+   ============================================================ */
+function MyGoalCard() {
+    const [study] = useStore('studygroup', STUDY_DEFAULT)
+    const now = useNow(60000)
+    const goal = study.myGoal || null
+    const from = iso(weekStart(now))
+    const to = iso(now)
+    const week = Object.entries(study.days || {}).reduce((n, [k, v]) => (k >= from && k <= to ? n + v : n), 0)
+    const change = () => {
+        const raw = window.prompt('Your own weekly study goal, in hours (0 removes it)', goal && goal.min ? String(+(goal.min / 60).toFixed(1)) : '10')
+        if (raw === null) return
+        const hours = Number(raw)
+        if (!Number.isFinite(hours) || hours < 0 || hours > 150) return notify({ title: 'Enter a number of hours', body: 'For example 10.', icon: '🔢' })
+        if (hours === 0) return saveMyGoal(0)
+        const title = window.prompt('What is it for? (optional)', (goal && goal.title) || '')
+        if (title === null) return
+        saveMyGoal(hours, title)
+        play('save')
+    }
+    return (
+        <section className="card side-card" aria-label="My goal">
+            <div className="row"><h3 className="grow">My goal{goal && goal.title ? ` · ${goal.title}` : ''}</h3><button className="btn sm" onClick={change}>{goal ? 'Change' : 'Set a goal'}</button></div>
+            {goal ? (
+                <>
+                    <p className="muted small" style={{ margin: 0 }}>{fmtMin(week)} of {fmtMin(goal.min)} this week</p>
+                    <div className="bar"><i className={week >= goal.min ? 'full' : ''} style={{ width: Math.min(100, (100 * week) / goal.min) + '%' }} /></div>
+                    <p className="muted small" style={{ margin: 0 }}>{week >= goal.min ? '🎉 Goal reached this week.' : `${fmtMin(goal.min - week)} to go.`} Private unless you share it on the Study Group page.</p>
+                </>
+            ) : <p className="muted small" style={{ margin: 0 }}>A weekly study target just for you. Only you can see it.</p>}
+        </section>
+    )
+}
+
 function RecurringCard() {
     const [list, , update] = useStore('recurring', [])
     const [text, setText] = useState('')
@@ -502,7 +537,7 @@ function WeekBoard() {
         update(d => {
             const list = ensure(d)[day]
             const at = list.findIndex(x => x.id === todo.id)
-            const { details, ...plain } = todo // eslint-disable-line no-unused-vars
+            const { details, ...plain } = todo
             list.splice(at + 1, 0, { ...plain, id: uid(), done: false, doneOn: null, ...(details ? { details: structuredClone(details).map(function re(b) { return { ...b, id: uid(), ...(b.kids ? { kids: b.kids.map(re) } : {}) } }) } : {}) })
         })
         play('add')
@@ -954,6 +989,7 @@ export default function Dashboard() {
                 <aside className="dash-side">
                     <Upcoming />
                     <Pomodoro />
+                    <MyGoalCard />
                     <WeeklyReview />
                     <RecurringCard />
                 </aside>

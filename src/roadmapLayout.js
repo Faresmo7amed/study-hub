@@ -166,6 +166,15 @@ export function readingOrder(m) {
 
 /* ---------- layout ---------- */
 
+// A topic's subtopics, children included, in reading order: [{ s, depth, parent }] (depth 0 = a direct subtopic)
+const flatSubs = (list, depth = 0, parent = null, out = []) => {
+    ;(list || []).forEach(s => {
+        out.push({ s, depth, parent })
+        flatSubs(s.subs, depth + 1, s.id, out)
+    })
+    return out
+}
+
 // What it does: gives every topic, subtopic, gate and thread header a position, and lists the lines to draw.
 // Options: showSubs (false = overview of topics only), editable (reserves a slot for the "+ Subtopic" button).
 export function layoutMap(m, { showSubs = true, editable = false } = {}) {
@@ -187,10 +196,14 @@ export function layoutMap(m, { showSubs = true, editable = false } = {}) {
         let leftW = 0
         tops.forEach(t => {
             const subs = t.subs || []
-            const slots = showSubs ? subs.length + (editable ? 1 : 0) : 0
-            const cols = Math.ceil(slots / COLMAX)
-            const rowsN = Math.min(COLMAX, slots)
-            const sw = cols ? cols * SW + (cols - 1) * SUBCOLGAP : 0
+            // With nested subtopics the tree is drawn as one tall column per level; without them, the old wrapped columns
+            const flat = showSubs ? flatSubs(subs) : []
+            const nested = flat.some(f => f.depth > 0)
+            const slots = showSubs ? (nested ? flat.length : subs.length) + (editable ? 1 : 0) : 0
+            const levels = nested ? Math.max(...flat.map(f => f.depth)) + 1 : 0
+            const cols = nested ? levels : Math.ceil(slots / COLMAX)
+            const rowsN = nested ? slots : Math.min(COLMAX, slots)
+            const sw = cols ? cols * SW + (cols - 1) * (nested ? SUBOFF : SUBCOLGAP) : 0
             const sh = rowsN ? rowsN * SH + (rowsN - 1) * SUBGAP : 0
             const cellH = TH + (t.gate ? GATE : 0)
             const rowH = Math.max(cellH, sh)
@@ -211,7 +224,17 @@ export function layoutMap(m, { showSubs = true, editable = false } = {}) {
             if (t.gate) parts.push({ k: 'gate', id: t.id, x: spineX, y: row.y + TH, w: TW, h: GATE })
             if (i > 0) edges.push({ k: 'main', a: rows[i - 1].t.id, b: t.id })
 
-            if (showSubs) {
+            const flat = showSubs ? flatSubs(t.subs) : []
+            if (showSubs && flat.some(f => f.depth > 0)) {
+                // nested subtopics: each level sits one column further left, children right below their parent's row
+                flat.forEach((f, j) => {
+                    const x = spineX - SUBOFF - SW - f.depth * (SW + SUBOFF)
+                    const y = row.y + j * (SH + SUBGAP)
+                    parts.push({ k: 'sub', id: f.s.id, parent: f.parent || t.id, x, y, w: SW, h: SH })
+                    edges.push(f.parent ? { k: 'subsub', a: f.parent, b: f.s.id } : { k: 'sub', a: t.id, b: f.s.id })
+                })
+                if (editable) parts.push({ k: 'add', id: t.id, x: spineX - SUBOFF - SW, y: row.y + flat.length * (SH + SUBGAP), w: SW, h: SH })
+            } else if (showSubs) {
                 const subs = t.subs || []
                 const at = j => ({ col: Math.floor(j / COLMAX), r: j % COLMAX })
                 const pos = j => {
@@ -331,6 +354,13 @@ export function edgePath(e, L) {
         if (!th || !b) return null
         const x = b.x + TW / 2
         return `M${x} ${th.head.y + th.head.h}V${b.y}`
+    }
+    if (e.k === 'subsub') {
+        // a subtopic to its own subtopic, one column further left
+        const pa = L.subs.get(e.a)
+        const pb = L.subs.get(e.b)
+        if (!pa || !pb) return null
+        return `M${pa.x} ${pa.y + SH / 2}H${pa.x - SUBOFF / 2}V${pb.y + SH / 2}H${pb.x + SW}`
     }
     const a = e.k === 'subcol' ? L.subs.get(e.a) : L.nodes.get(e.a)
     const b = e.k === 'main' || e.k === 'side' ? L.nodes.get(e.b) : L.subs.get(e.b)

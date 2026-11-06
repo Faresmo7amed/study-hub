@@ -127,7 +127,6 @@ export const loadBlocks = () => normalizeStore(getStore('database', seedStore)).
 
 // What it does: turns one table into a small plain object (titles, progress, linked tasks) that is safe to send to friends.
 // When to use it: when sharing a table. Progress comes from a "percent checked" rollup, else the status or checkbox column.
-// eslint-disable-next-line react-refresh/only-export-components
 // What it does: copies a whole group of tables (Goals, Tasks...) so a friend can open it. Row notes are removed.
 // When to use it: when sharing a group of tables. Relations and rollups need all its tables, so they travel together.
 // eslint-disable-next-line react-refresh/only-export-components

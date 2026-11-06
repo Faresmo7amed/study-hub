@@ -160,6 +160,16 @@ export const runElapsed = (r, t) => {
     return p ? p.acc + (p.since ? Math.max(0, t - p.since) : 0) : 0
 }
 
+// What it does: saves YOUR weekly goal (hours and an optional name; 0 hours removes it) and refreshes the groups it is shared with.
+// When to use it: from any page (the Study Group page and the Dashboard both call it).
+export function saveMyGoal(hours, title = '') {
+    setStore('studygroup', cur => ({
+        ...cur,
+        myGoal: hours > 0 ? { title: String(title || '').trim().slice(0, 60), min: Math.round(hours * 60), groups: (cur.myGoal && cur.myGoal.groups) || [] } : null,
+    }), STUDY_DEFAULT)
+    publish(getSyncUser())
+}
+
 export function startSession(user, subject = '') {
     if (runActive(getStore('studyrun', {}))) return
     setStore('studyrun', { on: true, acc: 0, since: Date.now(), day: todayISO(), subject: String(subject || '').slice(0, 30) }, {})
@@ -1052,16 +1062,11 @@ export default function StudyGroup() {
         if (raw === null) return
         const hours = Number(raw)
         if (!Number.isFinite(hours) || hours < 0 || hours > 150) return notify({ title: 'Enter a number of hours', body: 'For example 10.', icon: '🔢' })
-        if (hours === 0) {
-            update(d => { d.myGoal = null })
-            publish(user)
-            return
-        }
+        if (hours === 0) return saveMyGoal(0)
         const title = window.prompt('What is it for? (optional)', (myGoal && myGoal.title) || '')
         if (title === null) return
-        update(d => { d.myGoal = { title: title.trim().slice(0, 60), min: Math.round(hours * 60), groups: (d.myGoal && d.myGoal.groups) || [] } })
+        saveMyGoal(hours, title)
         play('save')
-        publish(user)
     }
     // What it does: shows or hides your goal in the group you are looking at. When to use it: the Share button of the goal box.
     const toggleShareGoal = () => {
